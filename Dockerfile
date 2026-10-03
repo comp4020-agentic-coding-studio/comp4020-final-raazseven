@@ -1,18 +1,20 @@
 # syntax = docker/dockerfile:1
 
-# A placeholder, and yours to replace: it serves one page, plus README.md
-# verbatim at /readme/, which is enough to prove the deploy path end to end.
-# Whatever your app is built with, the image that replaces this one must serve
-# HTTP on 0.0.0.0:$PORT (fly.toml sets PORT) and publish README.md at /readme/
-# (spec/README.md says what's checked).
+# Node + TypeScript (run directly, no build step --- Node 24 strips types
+# natively) + Fastify, with SQLite (node:sqlite, built in, no native deps to
+# compile) writing to the Fly volume at /data. Serves the app at / and the
+# README at /readme/ (spec/README.md says what's checked).
 
-FROM docker.io/library/busybox:1.38.0
-COPY placeholder/ /src/
-COPY README.md /src/
-# README.md goes into the page as-is, HTML-escaped, in place of @README@;
-# rendering it properly is your app's job
-RUN mkdir -p /site/readme \
-    && cp /src/index.html /site/ \
-    && sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g' /src/README.md > /src/body \
-    && sed -e '/@README@/{r /src/body' -e 'd}' /src/readme.html > /site/readme/index.html
-CMD ["sh", "-c", "exec httpd -f -p 0.0.0.0:${PORT:-8080} -h /site"]
+FROM node:24-alpine
+WORKDIR /app
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+RUN corepack enable && corepack prepare pnpm@11.9.0 --activate \
+    && pnpm install --prod --frozen-lockfile
+
+COPY src ./src
+COPY README.md ./README.md
+
+ENV NODE_ENV=production
+EXPOSE 8080
+CMD ["node", "src/server.ts"]
