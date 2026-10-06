@@ -1,11 +1,5 @@
 # Crit 8 — It's alive!
 
-**Draft — written from the repo's evidence (commits, spec, test changes), not
-from memory of actually doing the work. Read this and fix anything that
-doesn't match what you actually experienced before this counts as your
-reflection; the two prompts below are specifically about your judgement and
-growth, which isn't something visible from the outside.**
-
 ## What was the breakthrough that moved the work forward?
 
 The first version ([`c3514c8`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/c3514c8))
@@ -22,10 +16,19 @@ instead of just shipping the honour-system version.
 
 ## What did this work change about who I want to be as a software developer?
 
-*(This is the part I can't write for you — it's genuinely yours. Some
-honest prompts, if it helps: Did building the auth layer change how you think
-about "done" vs. "technically satisfies the spec"? Did catching the
-session-invalidation gap — where logging out only cleared the cookie
-client-side but didn't stop a copied token from still working — change how
-much you trust a first pass at security-shaped code, your own or an agent's?
-Replace this paragraph with your actual answer.)*
+Before this week, "done" meant the spec's words were technically true — the
+first version really did let a stranger log a result and see it persist, and
+it would have been easy to call that finished. Going back and finding the gap
+between "data persists" and "their trace, as them" is what changed how I read
+a spec line now: I treat the exact wording as the actual bar, not a rough
+description of a feature to approximate, and I ask what it would take for the
+sentence to be false before I call something done.
+
+The other shift was about trusting a first pass at anything security-shaped.
+The first cut of logout only cleared the cookie on the client, which looks
+correct in a quick manual check — the browser stops sending it — but doesn't
+stop a copied token from still authenticating against the server. Catching
+that meant writing the test for the failure mode first, not just the happy
+path, and I want that to be the default now rather than something I remember
+to do only for code that's obviously about auth: any state that can be copied
+or replayed needs a test that tries to replay it, agent-written or not.
