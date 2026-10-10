@@ -135,6 +135,80 @@ export const baseStyles = `
     outline-offset: 1px;
   }
 
+  select {
+    font: inherit;
+    font-size: 1rem;
+    padding: 0.6rem 0.7rem;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg);
+    color: var(--text);
+  }
+
+  select:focus {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+
+  .avatar {
+    border-radius: 50%;
+    object-fit: cover;
+    flex-shrink: 0;
+    background: var(--border);
+  }
+
+  .avatar-sm { width: 28px; height: 28px; }
+  .avatar-md { width: 40px; height: 40px; }
+  .avatar-lg { width: 56px; height: 56px; }
+
+  .profile-header {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 0.5rem;
+  }
+
+  .avatar-upload {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0.5rem 0 1rem;
+  }
+
+  .avatar-upload input[type="file"] {
+    font-size: 0.8rem;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .avatar-upload button {
+    padding: 0.4rem 0.75rem;
+    font-size: 0.85rem;
+    white-space: nowrap;
+  }
+
+  .error-text { color: #b91c1c; }
+
+  .group-match-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.85rem 0.25rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .group-match-row .opponent {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .group-match-row .score {
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+  }
+
   button {
     font: inherit;
     font-weight: 600;
