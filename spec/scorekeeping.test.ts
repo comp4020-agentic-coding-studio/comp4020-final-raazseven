@@ -25,22 +25,40 @@ async function createGroup(name: string): Promise<string> {
   return groupPath!;
 }
 
+async function register(groupPath: string, name: string, password: string): Promise<string> {
+  const res = await fetch(new URL(`${groupPath}/register`, baseUrl), {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ name, password }),
+    redirect: "manual",
+  });
+  expect(res.status, `registering ${name}`).toBe(303);
+  return sessionCookie(res);
+}
+
+// Winner/loser are now a member's id (the log-a-result form is a <select>
+// populated from the group's real members), not free text --- this reads the
+// id back off the rendered page the same way a browser would.
+async function memberId(groupPath: string, cookie: string, name: string): Promise<string> {
+  const res = await fetch(new URL(groupPath, baseUrl), { headers: { cookie } });
+  const html = await res.text();
+  const match = html.match(new RegExp(`<option value="(\\d+)">${name}</option>`));
+  expect(match, `expected ${name} to appear as an option in the winner/loser selects`).toBeTruthy();
+  return match![1]!;
+}
+
 it("a registered member's logged result is still there on the next visit", async () => {
   const groupPath = await createGroup(`spec-test-group-${Date.now()}`);
 
-  const registerRes = await fetch(new URL(`${groupPath}/register`, baseUrl), {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ name: "Riley", password: "hunter22" }),
-    redirect: "manual",
-  });
-  expect(registerRes.status).toBe(303);
-  const cookie = sessionCookie(registerRes);
+  const cookie = await register(groupPath, "Riley", "hunter22");
+  await register(groupPath, "Sam", "another-password");
+  const rileyId = await memberId(groupPath, cookie, "Riley");
+  const samId = await memberId(groupPath, cookie, "Sam");
 
   const logRes = await fetch(new URL(`${groupPath}/results`, baseUrl), {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded", cookie },
-    body: new URLSearchParams({ game: "FIFA", winner: "Riley", loser: "Sam" }),
+    body: new URLSearchParams({ game: "FIFA", winner: rileyId, loser: samId }),
     redirect: "manual",
   });
   expect(logRes.status).toBe(303);
@@ -57,35 +75,69 @@ it("a registered member's logged result is still there on the next visit", async
 
 it("logging a result requires signing in first", async () => {
   const groupPath = await createGroup(`spec-test-group-${Date.now()}-nonmember`);
+  const cookie = await register(groupPath, "Alex", "a-password-123");
+  const alexId = await memberId(groupPath, cookie, "Alex");
+  await register(groupPath, "Jo", "another-password");
+  const joId = await memberId(groupPath, cookie, "Jo");
 
-  // No session cookie at all: the app must not record this as a result.
+  // No session cookie at all: the app must not record this as a result, even
+  // though both named players are real members.
   const logRes = await fetch(new URL(`${groupPath}/results`, baseUrl), {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ game: "FIFA", winner: "Nobody", loser: "Nobody Else" }),
+    body: new URLSearchParams({ game: "FIFA", winner: alexId, loser: joId }),
   });
   expect(logRes.status).toBe(200);
   const html = await logRes.text();
-  expect(
-    html,
-    "signed-out visitors should be asked to sign in, not have their result recorded",
-  ).not.toContain("Nobody Else");
+  expect(html, "signed-out visitors should be asked to sign in").toContain("Sign in to log results");
 
   const after = await fetch(new URL(groupPath, baseUrl));
   const afterHtml = await after.text();
-  expect(afterHtml).not.toContain("Nobody Else");
+  expect(afterHtml).not.toContain("FIFA");
+});
+
+it("a result can't be logged against someone who isn't a member of the group", async () => {
+  const groupPath = await createGroup(`spec-test-group-${Date.now()}-strangers`);
+  const cookie = await register(groupPath, "Casey", "a-real-password");
+  const caseyId = await memberId(groupPath, cookie, "Casey");
+
+  const logRes = await fetch(new URL(`${groupPath}/results`, baseUrl), {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded", cookie },
+    // id 999999 belongs to no one in this (or any) group
+    body: new URLSearchParams({ game: "FIFA", winner: caseyId, loser: "999999" }),
+    redirect: "manual",
+  });
+  expect(logRes.status).toBe(200); // re-rendered with an error, not redirected
+  const html = await logRes.text();
+  expect(html).toContain("must both be members of this group");
+
+  const after = await fetch(new URL(groupPath, baseUrl));
+  expect(await after.text()).not.toContain("FIFA");
+});
+
+it("winner and loser can't be the same player", async () => {
+  const groupPath = await createGroup(`spec-test-group-${Date.now()}-self-match`);
+  const cookie = await register(groupPath, "Drew", "a-real-password");
+  const drewId = await memberId(groupPath, cookie, "Drew");
+
+  const logRes = await fetch(new URL(`${groupPath}/results`, baseUrl), {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded", cookie },
+    body: new URLSearchParams({ game: "Chess", winner: drewId, loser: drewId }),
+    redirect: "manual",
+  });
+  expect(logRes.status).toBe(200);
+  expect(await logRes.text()).toContain("can't be the same player");
 });
 
 it("logging back in after logging out requires the password again", async () => {
   const groupPath = await createGroup(`spec-test-group-${Date.now()}-logout`);
 
-  const registerRes = await fetch(new URL(`${groupPath}/register`, baseUrl), {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ name: "Sam", password: "correct-horse" }),
-    redirect: "manual",
-  });
-  const oldCookie = sessionCookie(registerRes);
+  const oldCookie = await register(groupPath, "Sam", "correct-horse");
+  const robinCookie = await register(groupPath, "Robin", "another-password");
+  const samId = await memberId(groupPath, robinCookie, "Sam");
+  const robinId = await memberId(groupPath, robinCookie, "Robin");
 
   const logoutRes = await fetch(new URL(`${groupPath}/logout`, baseUrl), {
     method: "POST",
@@ -98,10 +150,12 @@ it("logging back in after logging out requires the password again", async () => 
   const staleAttempt = await fetch(new URL(`${groupPath}/results`, baseUrl), {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded", cookie: oldCookie },
-    body: new URLSearchParams({ game: "Chess", winner: "Sam", loser: "Ghost" }),
+    body: new URLSearchParams({ game: "Chess", winner: samId, loser: robinId }),
+    redirect: "manual",
   });
+  expect(staleAttempt.status).toBe(200); // not redirected: the result wasn't recorded
   const staleHtml = await staleAttempt.text();
-  expect(staleHtml, "a logged-out session token must not still work").not.toContain("Ghost");
+  expect(staleHtml, "a logged-out session token must not still work").toContain("Sign in to log results");
 
   // Logging back in with the password works and issues a usable session.
   const loginRes = await fetch(new URL(`${groupPath}/login`, baseUrl), {
@@ -116,7 +170,7 @@ it("logging back in after logging out requires the password again", async () => 
   const logRes = await fetch(new URL(`${groupPath}/results`, baseUrl), {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded", cookie: newCookie },
-    body: new URLSearchParams({ game: "Chess", winner: "Sam", loser: "Robin" }),
+    body: new URLSearchParams({ game: "Chess", winner: samId, loser: robinId }),
     redirect: "manual",
   });
   expect(logRes.status).toBe(303);
