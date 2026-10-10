@@ -4,10 +4,13 @@
 
 [`comp4020-final-raazseven`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven)
 is a scorekeeper for one friend group: create a group, get a code, log who
-beat who at whatever you play. Crit 8's bar is proof of life — a stranger can
+beat who at whatever you play. Crit 8's bar was proof of life — a stranger can
 visit, do the core thing, and find their trace still there when they come
-back — so the two things this week had to answer were "what stack gets this
-deployed fastest" and "what does 'their trace' actually require."
+back. Crit 9's bar is proof of life *together* — a change one person makes
+has to reach everyone else's open session within about a second, with no
+reload, plus one decision about what happens when several people use the app
+at once. Two different weeks, but the same underlying question each time:
+what does the spec's wording actually require, once you take it literally?
 
 ## Stack: Node + TypeScript direct, Fastify, node:sqlite
 
@@ -23,11 +26,18 @@ folder to keep in sync with source), Fastify is a few dependencies instead
 of a framework's worth, and `node:sqlite` is built into Node itself — no
 native module to compile for Alpine, no separate database service to
 provision on Fly. That's the smallest path from "brief" to "a stranger can
-use it," which is what this week asks for. It's a first choice: if the app
+use it," which is what crit 8 asked for. It's a first choice: if the app
 outgrows a single SQLite file on one volume, that's a new decision record,
 not a retrofit of this one.
 
-## What "their trace is still there" turned out to mean
+That choice held up two weeks later without changing: crit 9's real-time
+requirement needed one more small dependency (`@fastify/multipart`, for photo
+uploads) and one new file (`src/live.ts`, an in-memory pub-sub), but no new
+infrastructure — no message broker, no second process, no change to
+`fly.toml`. A single machine with no horizontal scaling is also *why*
+in-memory pub-sub is enough: there's only ever one process to broadcast from.
+
+## Crit 8: what "their trace is still there" turned out to mean
 
 The first working version
 ([`c3514c8`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/c3514c8))
@@ -53,11 +63,12 @@ password hash, and a session token in an httpOnly cookie
 - **The cookie is scoped to `/g/:code`**, not the whole site, so one group's
   session can't be replayed against another group by accident.
 
-`spec/scorekeeping.test.ts` carries the same commit: it now checks the full
-loop over HTTP — register, log a result, see it on a fresh visit with the
-same cookie — plus the two failure modes that matter for "as them": logging
-a result with no session doesn't record it, and a logged-out session token
-stops working even though a fresh login still succeeds.
+`spec/scorekeeping.test.ts` carried the same commit: it checked the full loop
+over HTTP — register, log a result, see it on a fresh visit with the same
+cookie — plus the two failure modes that matter for "as them": logging a
+result with no session doesn't record it, and a logged-out session token
+stops working even though a fresh login still succeeds. (Crit 9 later
+rewrote parts of this file again — see below.)
 
 The same commit also pulled the inline `<style>` blocks out into
 `src/styles.ts` and reworked the group page from one bare form into
@@ -66,30 +77,11 @@ not asked for by the spec directly, but the brief's own "good" criteria
 (`README.md`) are about an app a friend group would actually want to use, and
 a form that silently let anyone log results as anyone wasn't that.
 
-## Directing, grounding and correcting
-
-I used Claude Code across two sessions this week: the first built the
-initial Fastify/SQLite skeleton to get something deployable fast; the second
-is the account/session work above. I grounded the second session in the
-spec line itself rather than a feature wishlist — I re-read "find their trace
-still there... as them" and asked what the first version was actually
-missing against that sentence, which is what surfaced the no-accounts gap.
-The main correction I made along the way was on the session-invalidation
-behaviour: the first draft of the login/logout logic only cleared the
-cookie client-side, which doesn't stop a copied token from still working
-server-side — I asked for the token to rotate in the database on both login
-and logout instead, and had the agent add a test (`logging back in after
-logging out requires the password again`) that fails if that regresses.
-`pnpm typecheck` and `pnpm test` (5/5, against the running app per
-`spec/global-setup.ts`) are clean as of
-[`1c9b90a`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/1c9b90a).
-
 ## Crit 9: real players, group-vs-group, real-time
 
-Crit 9 asks for two things: the app has to be real-time (a change reaches
-everyone else's open session in about a second, no reload), and one
-decision about concurrent use, written down. I planned this week's work with
-the agent before any code changed — the agreed plan is
+Crit 9 asks for two things: the app has to be real-time, and one decision
+about concurrent use, written down. I planned this week's work with the
+agent before any code changed — the agreed plan is
 [`crit9pan.md`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/blob/main/crit9pan.md)
 in the repo root, alongside this file.
 
@@ -141,7 +133,27 @@ I asked the agent to treat a group's existing page as its "profile" (avatar +
 name) rather than inventing a second page for it, since the group page
 already was that.
 
-### Directing, grounding and correcting
+## Directing, grounding and correcting
+
+### Crit 8
+
+I used Claude Code across two sessions this week: the first built the
+initial Fastify/SQLite skeleton to get something deployable fast; the second
+is the account/session work above. I grounded the second session in the spec
+line itself rather than a feature wishlist — I re-read "find their trace
+still there... as them" and asked what the first version was actually
+missing against that sentence, which is what surfaced the no-accounts gap.
+The main correction I made along the way was on the session-invalidation
+behaviour: the first draft of the login/logout logic only cleared the cookie
+client-side, which doesn't stop a copied token from still working
+server-side — I asked for the token to rotate in the database on both login
+and logout instead, and had the agent add a test (`logging back in after
+logging out requires the password again`) that fails if that regresses.
+`pnpm typecheck` and `pnpm test` (5/5, against the running app per
+`spec/global-setup.ts`) were clean as of
+[`1c9b90a`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/1c9b90a).
+
+### Crit 9
 
 I answered three scoped questions before any code was written — avatars
 (generated + uploadable, not one or the other), the match model (one score
@@ -152,8 +164,8 @@ correction worth noting: the plan's "push only results" default for the live
 feed stopped being sufficient the moment the membership gate landed, and
 re-reading that interaction out loud with the agent is what turned "push
 only results" into the three-event decision actually recorded in the ADR —
-nobody asked for that explicitly; it fell out of making the two features
-make sense together.
+nobody asked for that explicitly; it fell out of making the two features make
+sense together.
 
 `pnpm check` (typecheck + all 17 spec tests, across `invariants`,
 `scorekeeping`, `avatars`, `group-matches`, and `live-updates`) is clean as of
@@ -163,4 +175,8 @@ before writing the matching spec tests — valid and rejected result logging,
 avatar upload with the per-member authorization check, a group match
 appearing correctly on both sides, and the SSE stream emitting a live
 `result` event and a live `member` event — rather than trusting the tests
-alone on the first pass.
+alone on the first pass. The deploy itself was verified the same way: after
+`flyctl deploy`, I re-ran the SSE check against the live
+`comp4020-final-raazseven.fly.dev` URL (through Fly's actual proxy, not just
+localhost) and watched a logged-in-elsewhere result arrive on the open
+stream, since crit 9's bar is deployed real-time, not merely local real-time.
