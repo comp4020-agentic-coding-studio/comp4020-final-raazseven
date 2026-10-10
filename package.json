@@ -5,6 +5,7 @@
   "scripts": {
     "prepare": "git rev-parse --git-dir >/dev/null 2>&1 && git config core.hooksPath .githooks || true",
     "dev": "DB_PATH=./data/dev.db PORT=3000 node --watch src/server.ts",
+    "seed": "DB_PATH=./data/dev.db node scripts/seed.ts",
     "typecheck": "tsc --noEmit",
     "check": "pnpm typecheck && pnpm test",
     "check:evidence": "node scripts/check-evidence.ts",
