@@ -133,6 +133,62 @@ I asked the agent to treat a group's existing page as its "profile" (avatar +
 name) rather than inventing a second page for it, since the group page
 already was that.
 
+### Making the group page fully responsive, then a real home page
+
+Two more rounds after the core crit-9 work landed, both directed live:
+
+- **Responsive.** The group page was pinned to one ~40rem column at every
+  screen width — fine on a phone, a narrow stripe lost in empty margin on a
+  laptop
+  ([`a2a9ff8`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/a2a9ff8)).
+  A real two-column layout at ≥900px (actions left, the live results/matches
+  feed right) fixed that. Along the way I found `.avatar-upload` rendering
+  as a centred column instead of a row: it's a `<form>`, and the generic
+  `form` rule sets `flex-direction: column`; `.avatar-upload` only overrode
+  `display`/`align-items`/`gap`, so the column direction leaked straight
+  through un-overridden.
+- **A logo and an actual home page**
+  ([`5f09693`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/5f09693)).
+  Two bare form cards under one tagline doesn't read as a product, so I
+  looked at how comparable apps (Inscore, Point Wars, Versus — all
+  friend-group score trackers) and current SaaS landing pages actually
+  structure themselves, then adapted that shape rather than inventing one:
+  a nav with Log in/Sign up, an outcome-first hero, a 3-step "how it works,"
+  a feature grid, then the real action cards. The accounts here are
+  per-group, not global, so those nav links are real anchors into the two
+  flows that already exist, not a fake global-login bolted on top.
+- **A design pass**
+  ([`0912dc3`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/0912dc3)):
+  a secondary icon-only color palette, a display typeface, a small
+  hand-drawn icon set, motion gated behind `prefers-reduced-motion`, and a
+  hero visual that's a crafted product-preview mockup (same CSS tokens as
+  the real app) rather than a stock photo or a screenshot that goes stale
+  the next time the UI changes. This surfaced two more real bugs, both from
+  the same root cause (an `<input>`/grid-track not shrinking the way I
+  assumed): `.cards-row`'s `1fr 1fr` has no 0-floor and blew out past its
+  container once the sidebar column made room genuinely tight, and
+  `<input>` is `inline-block` by default and was only ever full-width by
+  the coincidence of being a direct flex child of `<form>`. Both fixed, not
+  just one: a width-based media query wasn't the right trigger either, since
+  the sidebar is narrow by *layout*, not by *screen size*.
+
+### A group needs a profile, not just a name
+
+A group used to need only a name to exist. Starting one now requires a bio,
+at least one game tag, and a photo too — all mandatory and server-validated,
+not just HTML `required` attributes — for the same reason crit 8 required a
+member account instead of a bare name: there should be something real on a
+group's page before anyone's logged a single result
+([`8594012`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/8594012)).
+`POST /groups` moved from formbody to multipart so the photo travels with
+the text fields in one request.
+
+Every spec file had grown its own copy of `createGroup()`, and all five only
+ever sent a name — insufficient the moment group creation needed a whole
+profile. Rather than patch five near-identical copies, I pulled them into
+one `spec/support.ts`
+([`0ad6626`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/0ad6626)).
+
 ## Directing, grounding and correcting
 
 ### Crit 8
@@ -180,3 +236,24 @@ alone on the first pass. The deploy itself was verified the same way: after
 `comp4020-final-raazseven.fly.dev` URL (through Fly's actual proxy, not just
 localhost) and watched a logged-in-elsewhere result arrive on the open
 stream, since crit 9's bar is deployed real-time, not merely local real-time.
+
+For the responsive and design rounds, "verify" meant something more literal
+than reading CSS: I stood up a throwaway headless Chromium (no browser tool
+in the harness, so `playwright-core` installed to a scratch `/tmp` directory,
+with the missing shared libraries pulled via `apt-get download` +
+`dpkg-deb -x` since there's no `sudo` here) and drove it at 320/390/768/1280px
+against a seeded instance, checking for horizontal overflow and console
+errors programmatically rather than trusting a glance at a screenshot. That
+discipline is exactly what caught the `.avatar-upload` and `.cards-row`/
+`<input>` bugs above — both were real DOM/layout bugs a visual skim could
+easily have waved off as a rendering quirk, and I checked actual computed
+styles and bounding rects before concluding either way.
+
+The group-profile round started from a direct question — "did you test
+every feature?" — which I answered by actually auditing coverage rather than
+asserting yes. That audit is what found the three pre-existing gaps closed
+in [`0ad6626`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/0ad6626)
+(the group-match live event, the tied-score outcome branch, duplicate-name
+and wrong-password rejection) — none of them new bugs, all of them real
+holes in "tested" that had been sitting there since crit 8 and earlier in
+crit 9. `pnpm check` is 25/25 as of that commit.

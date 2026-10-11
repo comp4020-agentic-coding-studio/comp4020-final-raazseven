@@ -30,3 +30,13 @@ first, and treating "does this feature change what the other one means" as
 its own question, is what caught that before it shipped. I want that to be
 the default for any week with more than one thing on the list, not just the
 weeks where the interaction happens to be obvious.
+
+Later the same week, being asked directly whether I'd tested every feature
+was a smaller version of the same lesson. My honest answer wasn't "yes" — it
+was "let me check," and checking turned up three real gaps that had been
+sitting there since crit 8: a live broadcast confirmed only by its eventual
+effect, never caught live; an outcome branch no test's inputs happened to
+hit; two rejection paths enforced in the database layer but never asserted
+anywhere. None of those were new mistakes — they were old ones I hadn't gone
+looking for, and the only reason I found them was treating "did you test it"
+as a question to re-derive the answer to, not a status I already knew.

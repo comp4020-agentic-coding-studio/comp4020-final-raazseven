@@ -178,3 +178,61 @@ All run the existing way — real HTTP against the running app
    matches → real-time/ADR → seed/tests), not as one giant commit — that
    commit history is the process evidence `PROCESS.md` and
    `reflections/crit-9.md` cite.
+
+## Addendum 1: fully responsive, then a real home page + logo
+
+Two follow-up rounds after the plan above shipped, both directed live rather
+than re-planned from scratch:
+
+- **Responsive pass.** The group page was pinned to a ~40rem column at every
+  screen width. Added one `--page-width` variable driving header/main/footer
+  together (40rem → 48rem at 700px → 72rem at 1024px) and a real two-column
+  `.group-layout` grid at ≥900px (actions left, results/group-matches feed
+  right), instead of one column stretched wide. Found and fixed a real bug
+  along the way: `.avatar-upload` is a `<form>`, and the generic `form` rule
+  sets `flex-direction: column` — `.avatar-upload` only overrode
+  `display`/`align-items`/`gap`, so the column direction leaked through and
+  centred the file input above the button instead of beside it.
+- **Logo + real home page.** The home page was two bare form cards under one
+  tagline. Added `logoMark()` (a small SVG badge, reused as the favicon),
+  and rebuilt the home page around patterns from actual competitor apps
+  (Inscore, Point Wars, Versus) plus current SaaS landing-page structure: a
+  nav with Log in / Sign up, an outcome-focused hero, a 3-step "how it
+  works," a feature grid, then the real action cards. The accounts here are
+  per-group, not global, so "Log in"/"Sign up" are real anchors to the
+  actual two flows (create a group / enter a code), not a fake global-auth
+  UI layered on top of an architecture that doesn't have one.
+- **Design pass.** A secondary icon-only palette, the Sora display typeface,
+  a small hand-drawn icon set for the steps/features, restrained motion
+  (gated behind `prefers-reduced-motion`), and a crafted hero visual — a
+  product-preview mockup built from the same CSS tokens as the real app,
+  not a stock photo or a screenshot that would go stale the next time the
+  UI changes. Found and fixed two more real bugs surfaced by the narrower
+  sidebar column: `.cards-row`'s `1fr 1fr` track had no 0-floor and blew out
+  past its container once the sidebar made room genuinely tight (fixed with
+  `minmax(0, 1fr)`, plus always-stack in that specific sidebar context); and
+  `<input>` is `inline-block` by default and was only ever full-width by the
+  coincidence of being a direct flex child of `<form>` (fixed with an
+  explicit `width: 100%`).
+
+## Addendum 2: a group needs a whole profile to exist, not just a name
+
+A group used to need only a name. Creating one now requires a bio, at least
+one game tag, and a photo too — all mandatory, all server-validated, not
+just HTML `required` attributes — so a group has something real on its page
+before anyone's logged a result, for the same reason crit 8 required a
+member account instead of a bare name. `POST /groups` moved from formbody to
+multipart (the photo travels in the same request); a failed submission
+re-fills the name/bio/tags but not the photo, which HTML has no way to hand
+back to a form. Every spec file's own copy of `createGroup()` only ever sent
+a name, so this also meant consolidating the five near-identical copies into
+one `spec/support.ts` rather than patching each to build a valid multipart
+profile separately.
+
+Being asked directly "did you test every feature" was worth doing honestly
+rather than asserting yes: three real gaps turned up that predate this
+addendum (the group-match live SSE event was never asserted, only the
+rendered page after the fact; the tied-score "drew with" outcome branch was
+never exercised; registering a duplicate name and logging in with the wrong
+password were both enforced in `src/db.ts` but never asserted by a spec
+test) and are closed now rather than left for later. `pnpm check`: 25/25.
