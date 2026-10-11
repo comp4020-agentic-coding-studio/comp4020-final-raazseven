@@ -1,51 +1,10 @@
-import { expect, inject, it } from "vitest";
+import { expect, it } from "vitest";
+import { baseUrl, createGroup, memberId, register, sessionCookie } from "./support.ts";
 
 // Crit 8's bar: a stranger can do the core thing (create an account, log a
 // 1v1 result) and find their trace still there when they come back. This
 // checks that round trip over HTTP against the running app, so it holds for
 // whatever stack builds it.
-const baseUrl = inject("baseUrl");
-
-function sessionCookie(res: Response): string {
-  const setCookie = res.headers.get("set-cookie");
-  expect(setCookie, "registering should set a membership session cookie").toBeTruthy();
-  return setCookie!.split(";")[0]!;
-}
-
-async function createGroup(name: string): Promise<string> {
-  const res = await fetch(new URL("/groups", baseUrl), {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ name }),
-    redirect: "manual",
-  });
-  expect(res.status).toBe(303);
-  const groupPath = res.headers.get("location");
-  expect(groupPath, "creating a group should redirect to its page").toBeTruthy();
-  return groupPath!;
-}
-
-async function register(groupPath: string, name: string, password: string): Promise<string> {
-  const res = await fetch(new URL(`${groupPath}/register`, baseUrl), {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ name, password }),
-    redirect: "manual",
-  });
-  expect(res.status, `registering ${name}`).toBe(303);
-  return sessionCookie(res);
-}
-
-// Winner/loser are now a member's id (the log-a-result form is a <select>
-// populated from the group's real members), not free text --- this reads the
-// id back off the rendered page the same way a browser would.
-async function memberId(groupPath: string, cookie: string, name: string): Promise<string> {
-  const res = await fetch(new URL(groupPath, baseUrl), { headers: { cookie } });
-  const html = await res.text();
-  const match = html.match(new RegExp(`<option value="(\\d+)">${name}</option>`));
-  expect(match, `expected ${name} to appear as an option in the winner/loser selects`).toBeTruthy();
-  return match![1]!;
-}
 
 it("a registered member's logged result is still there on the next visit", async () => {
   const groupPath = await createGroup(`spec-test-group-${Date.now()}`);
@@ -129,6 +88,44 @@ it("winner and loser can't be the same player", async () => {
   });
   expect(logRes.status).toBe(200);
   expect(await logRes.text()).toContain("can't be the same player");
+});
+
+it("the same name can't be registered twice in a group", async () => {
+  const groupPath = await createGroup(`spec-test-group-${Date.now()}-dupe-name`);
+  await register(groupPath, "Morgan", "a-real-password");
+
+  const res = await fetch(new URL(`${groupPath}/register`, baseUrl), {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ name: "Morgan", password: "a-different-password" }),
+    redirect: "manual",
+  });
+  expect(res.status).toBe(200); // re-rendered with an error, not redirected
+  expect(await res.text()).toContain("already registered");
+
+  // and the original account's password still works --- the duplicate
+  // attempt didn't overwrite it
+  const loginRes = await fetch(new URL(`${groupPath}/login`, baseUrl), {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ name: "Morgan", password: "a-real-password" }),
+    redirect: "manual",
+  });
+  expect(loginRes.status).toBe(303);
+});
+
+it("logging in with the wrong password is rejected", async () => {
+  const groupPath = await createGroup(`spec-test-group-${Date.now()}-wrong-password`);
+  await register(groupPath, "Sasha", "the-real-password");
+
+  const res = await fetch(new URL(`${groupPath}/login`, baseUrl), {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ name: "Sasha", password: "a-guess" }),
+    redirect: "manual",
+  });
+  expect(res.status).toBe(200); // re-rendered with an error, not redirected
+  expect(await res.text()).toContain("incorrect");
 });
 
 it("logging back in after logging out requires the password again", async () => {

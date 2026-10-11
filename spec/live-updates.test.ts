@@ -1,4 +1,5 @@
-import { expect, inject, it } from "vitest";
+import { expect, it } from "vitest";
+import { baseUrl, createGroup, memberId, register } from "./support.ts";
 
 // Crit 9's bar: a change one person makes reaches everyone else with the
 // group open within about a second, with no reload. This opens the same SSE
@@ -6,43 +7,8 @@ import { expect, inject, it } from "vitest";
 // GET /g/:code/events) and checks a change made through a second, unrelated
 // request shows up in it quickly --- the contract, independent of how the
 // page itself renders.
-const baseUrl = inject("baseUrl");
 
-function sessionCookie(res: Response): string {
-  const setCookie = res.headers.get("set-cookie");
-  expect(setCookie).toBeTruthy();
-  return setCookie!.split(";")[0]!;
-}
-
-async function createGroup(name: string): Promise<string> {
-  const res = await fetch(new URL("/groups", baseUrl), {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ name }),
-    redirect: "manual",
-  });
-  const groupPath = res.headers.get("location");
-  expect(groupPath).toBeTruthy();
-  return groupPath!;
-}
-
-async function register(groupPath: string, name: string, password: string): Promise<string> {
-  const res = await fetch(new URL(`${groupPath}/register`, baseUrl), {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ name, password }),
-    redirect: "manual",
-  });
-  return sessionCookie(res);
-}
-
-async function memberId(groupPath: string, cookie: string, name: string): Promise<string> {
-  const res = await fetch(new URL(groupPath, baseUrl), { headers: { cookie } });
-  const html = await res.text();
-  const match = html.match(new RegExp(`<option value="(\\d+)">${name}</option>`));
-  expect(match).toBeTruthy();
-  return match![1]!;
-}
+const codeOf = (groupPath: string) => groupPath.replace("/g/", "");
 
 /** Reads an SSE stream until `predicate(bufferedText)` is true, or `timeoutMs` passes. */
 async function readUntil(
@@ -118,4 +84,38 @@ it("a newly registered member reaches another session's open stream live", async
   );
   expect(streamed, "the open stream should see the new member live, without a reload").toContain("event: member");
   expect(streamed).toContain("Marcus");
+});
+
+it("a group-vs-group match reaches both groups' open streams live", async () => {
+  // The third broadcast type (src/live.ts) alongside result/member --- this
+  // was never actually asserted before: the group-matches.test.ts cases only
+  // check the rendered page after the fact, not that it arrived live.
+  const stamp = Date.now();
+  const groupAPath = await createGroup(`spec-live-match-a-${stamp}`);
+  const groupBPath = await createGroup(`spec-live-match-b-${stamp}`);
+  const cookie = await register(groupAPath, "Priya", "a-real-password");
+
+  const [eventsA, eventsB] = await Promise.all([
+    fetch(new URL(`${groupAPath}/events`, baseUrl)),
+    fetch(new URL(`${groupBPath}/events`, baseUrl)),
+  ]);
+  expect(eventsA.status).toBe(200);
+  expect(eventsB.status).toBe(200);
+
+  const matchRes = await fetch(new URL(`${groupAPath}/matches`, baseUrl), {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded", cookie },
+    body: new URLSearchParams({ opponentCode: codeOf(groupBPath), game: "Soccer", scoreUs: "3", scoreThem: "2" }),
+    redirect: "manual",
+  });
+  expect(matchRes.status).toBe(303);
+
+  const [streamedA, streamedB] = await Promise.all([
+    readUntil(eventsA.body!, (text) => text.includes("event: group-match"), 3000),
+    readUntil(eventsB.body!, (text) => text.includes("event: group-match"), 3000),
+  ]);
+  expect(streamedA, "group A's own open stream should see the match live").toContain("event: group-match");
+  expect(streamedA).toContain("Soccer");
+  expect(streamedB, "the opponent's open stream should see the same match live").toContain("event: group-match");
+  expect(streamedB).toContain("Soccer");
 });

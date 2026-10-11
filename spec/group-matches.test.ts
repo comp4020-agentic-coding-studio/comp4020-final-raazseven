@@ -1,36 +1,8 @@
-import { expect, inject, it } from "vitest";
+import { expect, it } from "vitest";
+import { baseUrl, createGroup, register } from "./support.ts";
 
 // Crit 9's "group A vs group B" feature: one final score per match between
 // two whole groups, visible on both groups' pages.
-const baseUrl = inject("baseUrl");
-
-function sessionCookie(res: Response): string {
-  const setCookie = res.headers.get("set-cookie");
-  expect(setCookie).toBeTruthy();
-  return setCookie!.split(";")[0]!;
-}
-
-async function createGroup(name: string): Promise<string> {
-  const res = await fetch(new URL("/groups", baseUrl), {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ name }),
-    redirect: "manual",
-  });
-  const groupPath = res.headers.get("location");
-  expect(groupPath).toBeTruthy();
-  return groupPath!;
-}
-
-async function register(groupPath: string, name: string, password: string): Promise<string> {
-  const res = await fetch(new URL(`${groupPath}/register`, baseUrl), {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ name, password }),
-    redirect: "manual",
-  });
-  return sessionCookie(res);
-}
 
 const codeOf = (groupPath: string) => groupPath.replace("/g/", "");
 
@@ -52,10 +24,34 @@ it("a group-vs-group match shows on both groups' pages with the right score on e
   expect(groupAHtml).toContain("Soccer");
   expect(groupAHtml).toContain("3");
   expect(groupAHtml).toContain(`spec-match-group-b-${stamp}`);
+  expect(groupAHtml, "the winning side's fragment should say \"beat\"").toMatch(/beat/);
 
   const groupBHtml = await (await fetch(new URL(groupBPath, baseUrl))).text();
   expect(groupBHtml).toContain("Soccer");
   expect(groupBHtml).toContain(`spec-match-group-a-${stamp}`);
+  expect(groupBHtml, "the losing side's fragment should say \"lost to\"").toContain("lost to");
+});
+
+it("a tied group-vs-group match is worded as a draw on both sides", async () => {
+  // The outcome text in groupMatchesFragment() has a third branch (score_a
+  // === score_b) that the match above, at 3-2, never exercises.
+  const stamp = Date.now();
+  const groupAPath = await createGroup(`spec-match-draw-a-${stamp}`);
+  const groupBPath = await createGroup(`spec-match-draw-b-${stamp}`);
+  const cookie = await register(groupAPath, "Priya", "a-real-password");
+
+  const matchRes = await fetch(new URL(`${groupAPath}/matches`, baseUrl), {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded", cookie },
+    body: new URLSearchParams({ opponentCode: codeOf(groupBPath), game: "Chess", scoreUs: "1", scoreThem: "1" }),
+    redirect: "manual",
+  });
+  expect(matchRes.status).toBe(303);
+
+  const groupAHtml = await (await fetch(new URL(groupAPath, baseUrl))).text();
+  expect(groupAHtml).toContain("drew with");
+  const groupBHtml = await (await fetch(new URL(groupBPath, baseUrl))).text();
+  expect(groupBHtml).toContain("drew with");
 });
 
 it("logging a match against a code that isn't a real group is rejected", async () => {
