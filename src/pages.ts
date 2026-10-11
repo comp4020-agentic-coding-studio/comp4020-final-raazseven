@@ -249,7 +249,7 @@ export function groupPage(
     group.name,
     `<div class="profile-header">
       ${avatarImg(groupAvatarUrl(group.code), group.name, "lg")}
-      <div>
+      <div class="profile-header-text">
         <h1 style="margin-bottom:0.1rem">${escapeHtml(group.name)}</h1>
         <p class="lede" style="margin-top:0">Share this code so friends can find this group: <span class="code-chip">${code}</span></p>
       </div>
@@ -262,12 +262,18 @@ export function groupPage(
           </form>`
         : ""
     }
-    ${actionCard}
-    <h2>Results</h2>
-    <div id="results-list">${resultsListFragment(group, results)}</div>
-    ${groupMatchCard}
-    <h2>Group matches</h2>
-    <div id="group-matches-list">${groupMatchesFragment(group, groupMatches)}</div>`,
+    <div class="group-layout">
+      <div class="group-layout-actions">
+        ${actionCard}
+        ${groupMatchCard}
+      </div>
+      <div class="group-layout-feed">
+        <h2>Results</h2>
+        <div id="results-list">${resultsListFragment(group, results)}</div>
+        <h2>Group matches</h2>
+        <div id="group-matches-list">${groupMatchesFragment(group, groupMatches)}</div>
+      </div>
+    </div>`,
     liveScript(group.code),
   );
 }

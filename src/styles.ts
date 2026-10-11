@@ -11,6 +11,20 @@ export const baseStyles = `
     --chip-bg: #fef3c7;
     --chip-text: #92400e;
     --shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 1px 3px rgba(16, 24, 40, 0.06);
+    /* The page's content width, in one place so the header, main content and
+       footer always widen together --- see the breakpoints below. Phones get
+       the same single readable column as always; tablet and desktop get
+       more room, and the group page turns that into a real two-column
+       layout (.group-layout) instead of stretching one column thin. */
+    --page-width: 40rem;
+  }
+
+  @media (min-width: 700px) {
+    :root { --page-width: 48rem; }
+  }
+
+  @media (min-width: 1024px) {
+    :root { --page-width: 72rem; }
   }
 
   @media (prefers-color-scheme: dark) {
@@ -37,6 +51,10 @@ export const baseStyles = `
     color: var(--text);
     font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
     line-height: 1.55;
+    /* A group/game/player name is free text with no length limit --- this is
+       what stops one long, space-less word from forcing horizontal scroll
+       instead of wrapping. */
+    overflow-wrap: break-word;
   }
 
   header.site {
@@ -45,11 +63,12 @@ export const baseStyles = `
   }
 
   header.site .brand {
-    max-width: 40rem;
+    max-width: var(--page-width);
     margin: 0 auto;
     display: flex;
     align-items: baseline;
     gap: 0.5rem;
+    flex-wrap: wrap;
   }
 
   header.site a {
@@ -66,7 +85,7 @@ export const baseStyles = `
   }
 
   main {
-    max-width: 40rem;
+    max-width: var(--page-width);
     margin: 0 auto;
     padding: 2rem 1.25rem 4rem;
   }
@@ -100,6 +119,11 @@ export const baseStyles = `
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 1rem;
+    /* Caps only the top-level (home page) use of this --- a cards-row
+       nested inside a narrower card or .group-layout column is already
+       narrower than this, so the cap never binds there. */
+    max-width: 48rem;
+    margin-inline: auto;
   }
 
   @media (max-width: 480px) {
@@ -161,6 +185,10 @@ export const baseStyles = `
   .avatar-md { width: 40px; height: 40px; }
   .avatar-lg { width: 56px; height: 56px; }
 
+  @media (min-width: 1024px) {
+    .avatar-lg { width: 72px; height: 72px; }
+  }
+
   .profile-header {
     display: flex;
     align-items: center;
@@ -168,8 +196,22 @@ export const baseStyles = `
     margin-bottom: 0.5rem;
   }
 
+  .profile-header-text {
+    /* Without this a flex item won't shrink below its content's natural
+       width, so a long, space-less group name would push past the viewport
+       instead of wrapping. */
+    min-width: 0;
+  }
+
   .avatar-upload {
+    /* the generic "form" rule below sets flex-direction: column for every
+       other form on the page; this one needs an explicit row (it's a file
+       input next to a button, not a stack of fields), with wrap as the
+       escape hatch on the narrowest phones where both can't fit on one
+       line. */
     display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
     align-items: center;
     gap: 0.5rem;
     margin: 0.5rem 0 1rem;
@@ -189,11 +231,26 @@ export const baseStyles = `
 
   .error-text { color: #b91c1c; }
 
+  /* Mobile: just a single stacked column, same as ever --- actions (sign
+     in / log a result / log a match) above the feed (results / group
+     matches). Tablet and up: two real columns side by side, so the page
+     uses the width it's been given instead of staying one narrow strip
+     with empty margins on either side. */
+  @media (min-width: 900px) {
+    .group-layout {
+      display: grid;
+      grid-template-columns: minmax(18rem, 24rem) 1fr;
+      align-items: start;
+      gap: 2rem;
+    }
+  }
+
   .group-match-row {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
-    gap: 0.75rem;
+    gap: 0.5rem 0.75rem;
     padding: 0.85rem 0.25rem;
     border-bottom: 1px solid var(--border);
   }
@@ -243,9 +300,10 @@ export const baseStyles = `
 
   .result-row {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
-    gap: 0.75rem;
+    gap: 0.5rem 0.75rem;
     padding: 0.85rem 0.25rem;
     border-bottom: 1px solid var(--border);
   }
@@ -279,7 +337,7 @@ export const baseStyles = `
   }
 
   footer.site {
-    max-width: 40rem;
+    max-width: var(--page-width);
     margin: 0 auto;
     padding: 1rem 1.25rem 3rem;
     font-size: 0.875rem;
