@@ -40,3 +40,15 @@ hit; two rejection paths enforced in the database layer but never asserted
 anywhere. None of those were new mistakes — they were old ones I hadn't gone
 looking for, and the only reason I found them was treating "did you test it"
 as a question to re-derive the answer to, not a status I already knew.
+
+The same week then gave me three smaller versions of a third pattern:
+a mandatory photo, a free-text tags field, and a form crammed onto the home
+page were each, in turn, exactly what I'd asked for and still wrong once I
+actually looked at the running app — broke a pattern already set elsewhere,
+wasn't a real tag system, didn't fit next to a one-field "log in" card. Each
+got caught by using it, not by re-reading the request. And when I went back
+to check the crit-9 requirements were still met, the process files recording
+all of this had quietly stopped being true three commits earlier — the same
+failure mode, one level up: I'd trust that a document was current because I
+remembered writing it, instead of checking it against what the repo actually
+said now.
