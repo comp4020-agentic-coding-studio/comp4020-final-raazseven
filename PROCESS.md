@@ -383,4 +383,38 @@ one shared process at once. `vitest.config.ts` now runs spec files
 one at a time (`fileParallelism: false`) rather than quietly loosening the
 timeout to paper over contention; the real bug it had been hiding is fixed
 in `spec/scorekeeping.test.ts` directly. `pnpm check` is 39/39 clean as of
-the commits above.
+[`b90154f`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/b90154f)/[`6773346`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/6773346).
+
+### Deploying the migration and re-verifying, not assuming
+
+This round changes more than any single commit before it — a live schema
+migration against real production data, not just new code — so "deploy it
+and move on" wasn't good enough. Before touching the live volume, I ran the
+actual migration locally first: `pnpm seed` against a throwaway database,
+then a full manual walkthrough by hand with `curl` (not just the spec
+suite) — direct signup with no group code, a fresh group created and owned,
+logging out, a second account signing up and joining as a plain member,
+confirming that member can log a result but gets a real `403` trying to
+edit the group's profile, and confirming the owner succeeds at the same
+request. Only once all of that matched what the plan promised did I ask
+before running `flyctl deploy` against the shared production volume, since
+the migration is additive but still a one-way step on live data.
+
+The deploy itself surfaced the exact edge case `decisions/0002-global-accounts.md`
+names as a known cost: the live logs
+(`flyctl logs -a comp4020-final-raazseven`) show
+`migration: "Raj" (group 11) already taken globally --- creating this
+account as "Raj-2" instead` — two different real people named "Raj" in two
+different pre-existing groups, exactly the collision the ADR predicted,
+handled the way it said it would be rather than crashing or silently
+merging them. I re-ran the same manual walkthrough against the live URL
+afterward (not just localhost) to confirm the deployed behaviour matched,
+then specifically re-checked crit 9's real-time requirement rather than
+assuming a migration this large couldn't have touched it: opened the live
+SSE stream for a freshly created group
+(`https://comp4020-final-raazseven.fly.dev/g/PYFSZA/events`), logged a
+result from a second, independent request, and watched the `result` event
+arrive on the open stream within about two seconds, through Fly's actual
+proxy — the same check this file has run after every deploy this crit, kept
+up rather than skipped because the change looked architectural instead of
+feature-sized.

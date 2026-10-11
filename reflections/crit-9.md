@@ -81,3 +81,17 @@ literal names across files) from an artifact of running several test files
 against one shared server at once — the failure count dropped from a dozen
 to one the moment I stopped treating every red line as the same kind of
 problem.
+
+The deploy at the end of that change was the clearest version yet of "verify,
+don't assume" — this wasn't a new feature riding on an unchanged foundation,
+it was the foundation itself, running a real migration against the one copy
+of production data that exists. So I didn't treat passing tests locally as
+the finish line: I walked the whole flow by hand against a throwaway
+database first, only then deployed, and the live logs immediately showed the
+exact edge case the ADR had predicted (two different people both named
+"Raj," one real account migrating to "Raj-2") handled the way it was
+supposed to be, not a surprise. The habit that mattered most, though, was
+re-running the real-time check specifically, one more time, on the live
+URL — because "this change touches accounts, not broadcasting" is exactly
+the kind of reasoning that's usually right and occasionally isn't, and the
+whole point of this crit was never trusting that from memory.

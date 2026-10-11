@@ -330,3 +330,19 @@ fixed directly. `vitest.config.ts` now runs spec files one at a time —
 every spec file shares one real dev server and one SQLite file by design,
 and vitest's default per-file parallelism isn't a fit for that. `pnpm check`
 is 39/39 clean.
+
+Verification step 2 (seed + manual walkthrough) ran before anything touched
+the live volume: `pnpm seed` against a throwaway database, then signup,
+group creation, logout, a second account joining as a member, and the two
+owner-only 403s, all by hand with `curl` rather than trusting the spec suite
+alone. Only then did `flyctl deploy --remote-only --ha=false -a
+comp4020-final-raazseven` run against production, with the migration's
+known cost showing up immediately and handled exactly as designed —
+`flyctl logs` recorded `migration: "Raj" (group 11) already taken globally
+--- creating this account as "Raj-2" instead`, the real cross-group name
+collision `decisions/0002-global-accounts.md` names as a known edge case.
+Step 4's instruction to re-check real-time rather than assume it still held
+was followed literally: a fresh group created on the live URL, an open SSE
+connection against it, and a result logged from a separate request arrived
+on that stream within about two seconds — crit 9's actual bar, re-confirmed
+on this week's biggest change, not just on the smaller rounds before it.
