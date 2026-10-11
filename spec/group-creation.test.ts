@@ -13,15 +13,26 @@ import { baseUrl, TINY_PNG, uploadForm } from "./support.ts";
 // This checks the validation and the tag system itself; spec/support.ts's
 // createGroup() is what every other spec file uses to get a valid one.
 
-/** Scrapes one curated tag's checkbox id + name off the rendered home page,
+/** Scrapes one curated tag's checkbox id + name off the rendered /new page,
  * the same way a browser would see it --- this is what lets a test pick a
  * real curated tag without hard-coding a seeded id that could change. */
 async function aCuratedTag(): Promise<{ id: string; name: string }> {
-  const html = await (await fetch(new URL("/", baseUrl))).text();
+  const html = await (await fetch(new URL("/new", baseUrl))).text();
   const match = html.match(/<input type="checkbox" name="tagIds" value="(\d+)"[^>]*\/>\s*<span>([^<]+)<\/span>/);
-  expect(match, "expected at least one curated tag checkbox on the home page").toBeTruthy();
+  expect(match, "expected at least one curated tag checkbox on /new").toBeTruthy();
   return { id: match![1]!, name: match![2]! };
 }
+
+it("the dedicated /new page answers with the form, not just the home page card", async () => {
+  // The create-group form used to be a card on "/" --- it outgrew that (a
+  // name/bio/39-tag-picker/photo form next to a one-field "log in" card was
+  // a wildly mismatched pair), so it's its own page now.
+  const res = await fetch(new URL("/new", baseUrl));
+  expect(res.status).toBe(200);
+  const html = await res.text();
+  expect(html).toContain("Start a new group");
+  expect(html).toContain('action="/groups"');
+});
 
 it("creating a group with a photo succeeds and shows the profile, including the photo", async () => {
   const name = `spec-create-group-${Date.now()}`;

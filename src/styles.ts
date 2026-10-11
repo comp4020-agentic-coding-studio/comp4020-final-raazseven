@@ -884,6 +884,28 @@ export const baseStyles = `
   .action-section {
     scroll-margin-top: 1.5rem;
   }
+
+  /* A form this size (name, bio, a 39-tag picker, a photo choice) reads as
+     a real page, not a card --- centred and capped narrower than the site's
+     usual --page-width so the tag chips wrap into a focused column instead
+     of spreading thin across a wide desktop viewport. */
+  .new-group-page {
+    max-width: 34rem;
+    margin: 0 auto;
+  }
+
+  .back-link {
+    display: inline-block;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--muted);
+    text-decoration: none;
+    margin-bottom: 1rem;
+  }
+
+  .back-link:hover {
+    color: var(--accent);
+  }
 `;
 
 /** A deterministic, theme-independent mark --- app icons stay the same
@@ -931,7 +953,7 @@ export function siteHeader(showNav = false): string {
   const nav = showNav
     ? `<nav class="site-nav" aria-label="Account">
         <a class="btn-ghost" href="#login">Log in</a>
-        <a class="btn-solid" href="#signup">Sign up</a>
+        <a class="btn-solid" href="/new">Sign up</a>
       </nav>`
     : "";
   return `<header class="site">

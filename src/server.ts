@@ -31,7 +31,14 @@ import {
   UnsupportedAvatarTypeError,
   validateAvatarUpload,
 } from "./avatars.ts";
-import { groupMatchesFragment, groupPage, homePage, memberOptionsFragment, resultsListFragment } from "./pages.ts";
+import {
+  groupMatchesFragment,
+  groupPage,
+  homePage,
+  memberOptionsFragment,
+  newGroupPage,
+  resultsListFragment,
+} from "./pages.ts";
 import { renderReadme } from "./readme.ts";
 import { broadcast, subscribe } from "./live.ts";
 
@@ -110,6 +117,10 @@ app.get("/", async (_req, reply) => {
   reply.type("text/html").send(homePage());
 });
 
+app.get("/new", async (_req, reply) => {
+  reply.type("text/html").send(newGroupPage());
+});
+
 app.get("/readme/", async (_req, reply) => {
   reply.type("text/html").send(renderReadme());
 });
@@ -164,7 +175,7 @@ app.post("/groups", async (req, reply) => {
     .map((id) => Number(id))
     .filter((id) => Number.isInteger(id) && tagById(id) !== undefined);
   const prefill = { name: fields.name?.[0], bio: fields.bio?.[0], tagIds, customTags: customTagsRaw };
-  const fail = (createError: string) => reply.type("text/html").send(homePage({ createError, prefill }));
+  const fail = (createError: string) => reply.type("text/html").send(newGroupPage({ createError, prefill }));
 
   if (!name) return fail("a group name is required");
   if (!bio) return fail("a short bio for the group is required");

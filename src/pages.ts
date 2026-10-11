@@ -72,7 +72,7 @@ const avatarChoiceScript = `
 })();
 `;
 
-export interface HomePageOptions {
+export interface NewGroupPageOptions {
   createError?: string;
   /** What to put back in the form after a failed submit --- everything except
    * the file, which HTML has no way to hand back to a form. */
@@ -112,8 +112,7 @@ function tagPicker(selectedIds: number[], customTags: string): string {
     <input id="custom-tags" name="customTags" placeholder="e.g. Ping pong, Bananagrams" value="${escapeHtml(customTags)}" />`;
 }
 
-export function homePage(opts: HomePageOptions = {}): string {
-  const prefill = opts.prefill ?? {};
+export function homePage(): string {
   return layout(
     "Score's in Check",
     `<section class="hero">
@@ -127,7 +126,7 @@ export function homePage(opts: HomePageOptions = {}): string {
             to everyone the second it's in.
           </p>
           <div class="hero-actions hero-animate">
-            <a class="btn-solid" href="#signup">Sign up &mdash; start your group</a>
+            <a class="btn-solid" href="/new">Sign up &mdash; start your group</a>
             <a class="btn-ghost" href="#login">Log in with a code</a>
           </div>
         </div>
@@ -212,24 +211,8 @@ export function homePage(opts: HomePageOptions = {}): string {
     <div class="cards-row">
       <div class="card action-section" id="signup">
         <h2 style="margin-top:0">Sign up &mdash; start a new group</h2>
-        <p class="lede" style="font-size:0.85rem">A name, a bio, and at least one game tag are required --- your group's profile, before anyone's logged a single result. You'll create your own personal account on the next page.</p>
-        ${opts.createError ? `<p class="error-text">${escapeHtml(opts.createError)}</p>` : ""}
-        <form method="post" action="/groups" enctype="multipart/form-data">
-          <label for="name">Group name</label>
-          <input id="name" name="name" required placeholder="e.g. The Office FIFA League" value="${escapeHtml(prefill.name ?? "")}" />
-          <label for="bio">Bio</label>
-          <textarea id="bio" name="bio" required rows="2" placeholder="Who you are and why you keep score">${escapeHtml(prefill.bio ?? "")}</textarea>
-          <label>Game tags</label>
-          <p class="lede" style="font-size:0.8rem; margin:-0.25rem 0 0.5rem">Pick at least one, or add your own below.</p>
-          ${tagPicker(prefill.tagIds ?? [], prefill.customTags ?? "")}
-          <label>Group photo</label>
-          <div class="avatar-choice">
-            <label class="radio-option"><input type="radio" name="avatarChoice" value="generate" checked /> Generate one for me</label>
-            <label class="radio-option"><input type="radio" name="avatarChoice" value="upload" /> Upload a photo</label>
-          </div>
-          <input id="group-photo" name="avatar" type="file" accept="image/png,image/jpeg,image/webp" hidden />
-          <button type="submit">Create group</button>
-        </form>
+        <p class="lede" style="font-size:0.85rem">Give it a name, a bio, some game tags and a photo, then create your own account inside it.</p>
+        <a class="btn-solid" href="/new">Start a group</a>
       </div>
       <div class="card action-section" id="login">
         <h2 style="margin-top:0">Log in &mdash; have a code?</h2>
@@ -241,8 +224,44 @@ export function homePage(opts: HomePageOptions = {}): string {
         </form>
       </div>
     </div>`,
-    avatarChoiceScript,
+    undefined,
     true,
+  );
+}
+
+/** The dedicated "start a group" page --- this used to be a card on the home
+ * page, but a name + bio + tag picker + photo choice is a real form, not
+ * something that belongs squeezed into half a two-column row next to a
+ * one-field "log in" card (the two ended up wildly mismatched in height).
+ * Landing pages sell the idea; a form this size earns its own page. */
+export function newGroupPage(opts: NewGroupPageOptions = {}): string {
+  const prefill = opts.prefill ?? {};
+  return layout(
+    "Start a group — Score's in Check",
+    `<div class="new-group-page">
+      <a class="back-link" href="/">&larr; Back to home</a>
+      <h1>Start a new group</h1>
+      <p class="lede">A name, a bio, and at least one game tag are required --- your group's profile, before anyone's logged a single result. You'll create your own personal account on the next page.</p>
+      ${opts.createError ? `<p class="error-text">${escapeHtml(opts.createError)}</p>` : ""}
+      <form class="card" method="post" action="/groups" enctype="multipart/form-data">
+        <label for="name">Group name</label>
+        <input id="name" name="name" required placeholder="e.g. The Office FIFA League" value="${escapeHtml(prefill.name ?? "")}" />
+        <label for="bio">Bio</label>
+        <textarea id="bio" name="bio" required rows="2" placeholder="Who you are and why you keep score">${escapeHtml(prefill.bio ?? "")}</textarea>
+        <label>Game tags</label>
+        <p class="lede" style="font-size:0.8rem; margin:-0.25rem 0 0.5rem">Pick at least one, or add your own below.</p>
+        ${tagPicker(prefill.tagIds ?? [], prefill.customTags ?? "")}
+        <label>Group photo</label>
+        <div class="avatar-choice">
+          <label class="radio-option"><input type="radio" name="avatarChoice" value="generate" checked /> Generate one for me</label>
+          <label class="radio-option"><input type="radio" name="avatarChoice" value="upload" /> Upload a photo</label>
+        </div>
+        <input id="group-photo" name="avatar" type="file" accept="image/png,image/jpeg,image/webp" hidden />
+        <button type="submit">Create group</button>
+      </form>
+    </div>`,
+    avatarChoiceScript,
+    false,
   );
 }
 
