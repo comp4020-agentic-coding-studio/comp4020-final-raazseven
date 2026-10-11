@@ -27,9 +27,11 @@ and wants the receipts instead of relying on memory and exaggeration.
 
 ## What I chose not to build (yet)
 
-- **Accounts.** Anyone with a group's code can log a result; the group code is
-  the only boundary. That's enough for a dozen friends who already trust each
-  other — honesty is the default here, not something to engineer around.
+- **One identity across groups.** Signing up gets you a name, password and
+  profile photo inside one group, which is enough to stop a result being
+  logged as someone else. What's still deliberately missing is an account
+  that follows you between groups — the group's own code is still the only
+  way in, and that's on purpose, not a gap.
 - **Witness confirmation.** Right now any result can be logged on trust.
   Confirmation by a third friend is next week's build, once logging itself is
   solid.

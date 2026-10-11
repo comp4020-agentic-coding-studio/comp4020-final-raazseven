@@ -62,18 +62,32 @@ export const baseStyles = `
     padding: 1rem 1.25rem;
   }
 
-  header.site .brand {
+  header.site .brand-row {
     max-width: var(--page-width);
     margin: 0 auto;
     display: flex;
-    align-items: baseline;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    flex-wrap: wrap;
+  }
+
+  header.site .brand {
+    display: flex;
+    align-items: center;
     gap: 0.5rem;
     flex-wrap: wrap;
   }
 
-  header.site a {
+  header.site .brand-link {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
     color: var(--text);
     text-decoration: none;
+  }
+
+  header.site .wordmark {
     font-weight: 700;
     font-size: 1.1rem;
     letter-spacing: -0.01em;
@@ -83,6 +97,43 @@ export const baseStyles = `
     color: var(--muted);
     font-size: 0.875rem;
   }
+
+  .site-nav {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .btn-ghost, .btn-solid {
+    text-decoration: none;
+  }
+
+  .btn-ghost {
+    display: inline-block;
+    font-weight: 600;
+    font-size: 0.9rem;
+    padding: 0.45rem 0.9rem;
+    border-radius: 8px;
+    color: var(--text);
+    border: 1px solid var(--border);
+  }
+
+  .btn-ghost:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  .btn-solid {
+    display: inline-block;
+    font-weight: 600;
+    font-size: 0.9rem;
+    padding: 0.5rem 1rem;
+    border-radius: 8px;
+    background: var(--accent);
+    color: var(--accent-contrast);
+  }
+
+  .btn-solid:hover { background: var(--accent-hover); }
 
   main {
     max-width: var(--page-width);
@@ -344,11 +395,162 @@ export const baseStyles = `
   }
 
   footer.site a { color: var(--muted); }
+
+  .hero {
+    padding: 2rem 0 1rem;
+    text-align: center;
+  }
+
+  .hero .logo-mark {
+    margin-bottom: 1rem;
+  }
+
+  .hero h1 {
+    font-size: 2rem;
+    max-width: 30rem;
+    margin-inline: auto;
+  }
+
+  @media (min-width: 700px) {
+    .hero h1 { font-size: 2.5rem; max-width: 40rem; }
+  }
+
+  .hero .lede {
+    font-size: 1.05rem;
+    max-width: 32rem;
+    margin: 0.75rem auto 1.5rem;
+  }
+
+  .hero-actions {
+    display: flex;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+  }
+
+  .hero-actions .btn-solid, .hero-actions .btn-ghost {
+    padding: 0.7rem 1.4rem;
+    font-size: 1rem;
+  }
+
+  .steps {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 1rem;
+    margin: 2.5rem 0;
+  }
+
+  @media (min-width: 700px) {
+    .steps { grid-template-columns: repeat(3, 1fr); }
+  }
+
+  .step {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 1.25rem;
+  }
+
+  .step .step-number {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.75rem;
+    height: 1.75rem;
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--accent) 15%, transparent);
+    color: var(--accent);
+    font-weight: 700;
+    font-size: 0.85rem;
+    margin-bottom: 0.6rem;
+  }
+
+  .step h3 {
+    margin: 0 0 0.35rem;
+    font-size: 1rem;
+  }
+
+  .step p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.9rem;
+  }
+
+  .features {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 1rem;
+    margin: 2.5rem 0;
+  }
+
+  @media (min-width: 700px) {
+    .features { grid-template-columns: repeat(2, 1fr); }
+  }
+
+  @media (min-width: 1024px) {
+    .features { grid-template-columns: repeat(4, 1fr); }
+  }
+
+  .feature h3 {
+    margin: 0 0 0.35rem;
+    font-size: 0.95rem;
+  }
+
+  .feature p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+
+  .section-heading {
+    text-align: center;
+    margin-bottom: 1.5rem;
+  }
+
+  .section-heading h2 {
+    margin: 0 0 0.35rem;
+  }
+
+  .section-heading p {
+    margin: 0;
+    color: var(--muted);
+  }
+
+  .action-section {
+    scroll-margin-top: 1.5rem;
+  }
 `;
 
-export const siteHeader = `<header class="site">
-  <div class="brand">
-    <a href="/">Score's in Check</a>
-    <span class="tagline">friendly competition, kept honest</span>
-  </div>
-</header>`;
+/** A deterministic, theme-independent mark --- app icons stay the same
+ * regardless of light/dark, the same way a real app's logo would. Used both
+ * inline (header, hero) and as the page favicon (see src/pages.ts). */
+export function logoMark(size = 32): string {
+  return `<svg width="${size}" height="${size}" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Score's in Check logo">
+    <rect width="36" height="36" rx="10" fill="#4f46e5" />
+    <path d="M10 19L15.5 24.5L26 12" stroke="#ffffff" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" />
+  </svg>`;
+}
+
+/** The site header. `showNav` adds Log in / Sign up links --- only the home
+ * page needs them; a group page already has its own sign-in UI inline, and a
+ * second, unrelated pair of auth buttons there would just be confusing. */
+export function siteHeader(showNav = false): string {
+  const nav = showNav
+    ? `<nav class="site-nav" aria-label="Account">
+        <a class="btn-ghost" href="#login">Log in</a>
+        <a class="btn-solid" href="#signup">Sign up</a>
+      </nav>`
+    : "";
+  return `<header class="site">
+    <div class="brand-row">
+      <div class="brand">
+        <a class="brand-link" href="/">
+          ${logoMark(28)}
+          <span class="wordmark">Score's in Check</span>
+        </a>
+        <span class="tagline">friendly competition, kept honest</span>
+      </div>
+      ${nav}
+    </div>
+  </header>`;
+}

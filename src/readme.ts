@@ -20,7 +20,7 @@ export function renderReadme(): string {
     </style>
   </head>
   <body>
-    ${siteHeader}
+    ${siteHeader()}
     <main>
       <div class="card">
         ${body}

@@ -1,6 +1,6 @@
 import type { Group, GroupMatch, Member, Result } from "./db.ts";
 import { getGroupById } from "./db.ts";
-import { baseStyles, siteHeader } from "./styles.ts";
+import { baseStyles, logoMark, siteHeader } from "./styles.ts";
 
 function escapeHtml(s: string): string {
   return s
@@ -10,16 +10,22 @@ function escapeHtml(s: string): string {
     .replace(/"/g, "&quot;");
 }
 
-const layout = (title: string, body: string, script?: string) => `<!doctype html>
+// The same mark as the header/hero logo, inlined as a favicon so the browser
+// tab carries it too --- one SVG, two uses, instead of a separate image asset.
+const faviconHref = `data:image/svg+xml,${encodeURIComponent(logoMark(36))}`;
+
+/** `showNav` puts Log in / Sign up links in the header --- see siteHeader(). */
+const layout = (title: string, body: string, script?: string, showNav = false) => `<!doctype html>
 <html lang="en-AU">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>${escapeHtml(title)}</title>
+    <link rel="icon" type="image/svg+xml" href="${faviconHref}" />
     <style>${baseStyles}</style>
   </head>
   <body>
-    ${siteHeader}
+    ${siteHeader(showNav)}
     <main>
       ${body}
     </main>
@@ -45,19 +51,78 @@ function avatarImg(src: string, alt: string, size: "sm" | "md" | "lg" = "sm"): s
 export function homePage(): string {
   return layout(
     "Score's in Check",
-    `<h1>Score's in Check</h1>
-    <p class="lede">Start a group, log who beat who, keep the bragging rights honest.</p>
+    `<section class="hero">
+      <div class="logo-mark">${logoMark(56)}</div>
+      <h1>Stop arguing about who's actually winning.</h1>
+      <p class="lede">
+        Score's in Check is the record your friend group actually keeps up
+        to date: real accounts, every result logged as it happens, visible
+        to everyone the second it's in.
+      </p>
+      <div class="hero-actions">
+        <a class="btn-solid" href="#signup">Sign up &mdash; start your group</a>
+        <a class="btn-ghost" href="#login">Log in with a code</a>
+      </div>
+    </section>
+
+    <div class="steps">
+      <div class="step">
+        <span class="step-number">1</span>
+        <h3>Start a group, or join one</h3>
+        <p>Create your own group and get a share code, or enter a friend's code to land on theirs.</p>
+      </div>
+      <div class="step">
+        <span class="step-number">2</span>
+        <h3>Sign up, then log results</h3>
+        <p>Everyone gets their own name and password inside the group --- no logging a result as someone else.</p>
+      </div>
+      <div class="step">
+        <span class="step-number">3</span>
+        <h3>Watch it settle live</h3>
+        <p>Every result, and every group-vs-group match, shows up for everyone open to the page within a second.</p>
+      </div>
+    </div>
+
+    <div class="section-heading">
+      <h2>Built for one friend group, not a leaderboard for strangers</h2>
+      <p>Everything here is in the app today, not a roadmap.</p>
+    </div>
+    <div class="features">
+      <div class="feature">
+        <h3>Real members, not typed names</h3>
+        <p>A result can only be logged against someone who actually signed up to the group.</p>
+      </div>
+      <div class="feature">
+        <h3>Live, not eventually</h3>
+        <p>No refresh button. A result logged on one phone appears on everyone else's open page right away.</p>
+      </div>
+      <div class="feature">
+        <h3>Group vs. group</h3>
+        <p>Played another friend group for real? Log the final score once, and it's on both groups' pages.</p>
+      </div>
+      <div class="feature">
+        <h3>A face, not just a name</h3>
+        <p>Every member and group gets a profile photo &mdash; generated instantly, or upload your own.</p>
+      </div>
+    </div>
+
+    <div class="section-heading" id="get-started">
+      <h2>Get started</h2>
+      <p>Two ways in, depending on whether your group exists yet.</p>
+    </div>
     <div class="cards-row">
-      <div class="card">
-        <h2 style="margin-top:0">New group</h2>
+      <div class="card action-section" id="signup">
+        <h2 style="margin-top:0">Sign up &mdash; start a new group</h2>
+        <p class="lede" style="font-size:0.85rem">You'll get a share code first, then create your own account inside it.</p>
         <form method="post" action="/groups">
           <label for="name">Group name</label>
           <input id="name" name="name" required placeholder="e.g. The Office FIFA League" />
           <button type="submit">Create group</button>
         </form>
       </div>
-      <div class="card">
-        <h2 style="margin-top:0">Have a code?</h2>
+      <div class="card action-section" id="login">
+        <h2 style="margin-top:0">Log in &mdash; have a code?</h2>
+        <p class="lede" style="font-size:0.85rem">Enter your group's code, then log in (or sign up) once you're there.</p>
         <form method="get" action="/g">
           <label for="code">Group code</label>
           <input id="code" name="code" required placeholder="e.g. ABC123" style="text-transform: uppercase" />
@@ -65,6 +130,8 @@ export function homePage(): string {
         </form>
       </div>
     </div>`,
+    undefined,
+    true,
   );
 }
 
