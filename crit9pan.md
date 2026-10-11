@@ -260,3 +260,73 @@ Re-verified rather than assumed at that point: `pnpm check` 30/30, and the
 SSE real-time check re-run against the *current* live deploy (not the one
 checked earlier in the week), confirming a result still arrives on a second
 open session within about two seconds through Fly's actual proxy.
+
+## Addendum 4: accounts go global, with roles
+
+The account model above (and in crit 8) was per-group on purpose — `README.md`
+called it out as deliberate. Walked through from each user's perspective
+instead, it didn't hold up: logging in asked for a group code before the
+site would say who you were, nothing showed you were signed in outside one
+group's card, there was no way to be one person in two groups, and every
+signed-in member of a group could do anything any other member could,
+including the group's creator having no more standing than someone who
+joined a minute ago.
+
+This addendum reverses that decision. Full reasoning, options considered,
+and migration approach are in `decisions/0002-global-accounts.md`; the short
+version:
+
+- **`users`** (globally unique name, one password, one photo) replaces
+  per-group member identity; **`memberships`** (`user_id`, `group_id`,
+  `role`) is the join table recording who's in which group and as what.
+  `role` is `'owner'` (the group's creator) or `'member'`.
+- One global `session` cookie (`path: "/"`) replaces the per-group
+  `member_${code}` cookie. `/signup` and `/login` work with no group code;
+  `/me` is a dashboard listing every group you're in and your role in each;
+  creating or joining a group now requires being signed in first.
+- Owner-only, gated by a `requireOwner` check (403 for anyone else): editing
+  a group's profile, removing a member. Everything a member could already do
+  (log a result, log a group match) stays open to any member — this is an
+  added gate, not a general lockdown.
+- The old `members` table is kept, untouched, as the one-time migration
+  source — never dropped, same rule as every earlier migration this project
+  has done. Every existing membership becomes its **own** new account on
+  first startup (never merged by name across groups, which would otherwise
+  silently hand one person's identity to an unrelated namesake in another
+  group); a name collision during migration gets a numeric suffix.
+- `group_matches.logged_by_member_id` was `NOT NULL`, which SQLite can't
+  relax with a plain `ALTER TABLE ADD COLUMN` — that one table went through
+  a rename → recreate → copy → drop rebuild instead, the first time this
+  project needed that heavier migration shape.
+
+Three scoped questions were answered before this was planned in detail:
+exactly what "owner" gates (profile edit + member removal, not everything),
+what happens to a membership across the per-group → global-name change
+(each becomes its own separate account, not merged), and whether
+create/join requires login first (yes, landing on a dashboard). All three
+answers are recorded, with the "why," in the ADR rather than just acted on
+silently.
+
+Two bugs caught before shipping, both from checking existing test
+expectations rather than assuming the new routes matched the old ones
+exactly: splitting one combined register-and-join step into a separate
+global signup plus a `/g/:code/join` call dropped the live `member` SSE
+broadcast the old route used to fire; and `/signup`/`/login`/`/g/:code/profile`
+were initially built with the same manual multipart parsing the photo-upload
+routes need, despite having no file field, and were switched to the plain
+`formbody` plugin instead.
+
+Making names globally unique also broke several spec files that had reused
+the same literal names ("Priya," "Sam") across files back when each group
+was its own namespace — this showed up first as a pile of `Error: Test
+timed out in 5000ms` failures under the suite's normal parallel execution,
+which looked like a server regression but wasn't. Running the most
+suspicious file alone (no timeouts, two plain assertion failures) separated
+the real naming-collision bug from parallelism noise; fixing the collision
+in `spec/support.ts` and re-running with `--no-file-parallelism` reduced the
+whole suite to exactly one real remaining bug (a test re-logging-in with a
+literal name that `register()` no longer actually registers verbatim),
+fixed directly. `vitest.config.ts` now runs spec files one at a time —
+every spec file shares one real dev server and one SQLite file by design,
+and vitest's default per-file parallelism isn't a fit for that. `pnpm check`
+is 39/39 clean.

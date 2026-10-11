@@ -309,3 +309,78 @@ clean, and the SSE real-time check re-run against the live
 from earlier in the week) — a result logged from one request arrived on a
 second, independently-opened stream within about two seconds, through Fly's
 actual proxy.
+
+### Reversing the per-group account decision
+
+The biggest direction this week came after the group-profile work above,
+phrased from the outside: pressing "log in" asked for a group code before
+the site would say who you were, nothing on any page showed you were signed
+in, and there was no way to be one person in two groups, or for a group's
+creator to be able to do anything a brand-new member couldn't. I was asked
+to think about it from each user's perspective, and to add roles. That's a
+direct reversal of a choice `README.md` had called deliberate as recently as
+crit 8 ("no identity that follows you between groups... that's on purpose"),
+so it earned a plan and an ADR rather than a quiet patch.
+
+Before writing the plan I asked three scoped questions rather than guessing:
+what an owner should be able to do that a member can't (answered: edit the
+group's profile, remove a member — not a general lockdown of everything
+else), what happens to an existing membership once two different groups'
+"Sam" are no longer automatically the same global name (answered: each old
+membership becomes its own separate new account — merging by name would be
+a real account-takeover bug, not a convenience), and whether creating or
+joining a group should require logging in first (answered: yes, landing on
+a dashboard, rather than the account step happening mid-task). All three are
+recorded, with the reasoning, in `decisions/0002-global-accounts.md`.
+
+The build itself (`b90154f`) replaced the `members` table's role as the
+source of identity with two new tables — `users` (global, unique name) and
+`memberships` (user × group × role) — while keeping `members` itself
+untouched as the one-time migration source, the same "never drop, migrate
+in place" rule crit 8's account work already established. The one place
+that rule needed more than a plain `ALTER TABLE`: `group_matches.logged_by_member_id`
+was `NOT NULL`, which SQLite can't relax by adding a column, so that one
+table went through a rename → recreate → copy → drop rebuild instead of an
+in-place add.
+
+Two mistakes caught and fixed before they shipped, both from re-reading what
+the previous week's tests actually expected rather than assuming the new
+routes behaved identically: splitting one combined "register against this
+group" step into a global signup plus a separate join dropped the live
+`member` SSE broadcast the old route used to fire — caught by checking
+`live-updates.test.ts`'s expectations against what the new `/g/:code/join`
+handler actually did, not by it failing first. And `/signup`, `/login`, and
+the new `/g/:code/profile` route were built using the same manual multipart
+parsing the photo-upload routes need, despite none of the three having a
+file field — caught on review, switched to the plain `formbody` plugin
+already registered for exactly this shape of form.
+
+### Finding the real bug under a pile of flaky-looking failures
+
+Making names globally unique broke a different thing than the server: most
+spec files had picked the same literal names ("Priya," "Sam," "Riley")
+across files, which only worked when each group was its own namespace.
+Running the full suite afterward showed close to a dozen failures, nearly
+all `Error: Test timed out in 5000ms` rather than a clean assertion
+mismatch — the kind of output that's easy to misread as "the server is
+broken under load." Instead of chasing the timeouts first, I ran the one
+file most likely to show the real bug in isolation
+(`spec/scorekeeping.test.ts` alone, no timeouts, two plain assertion
+failures), which separated "a real naming collision" from "noise." Fixing
+the collision (`spec/support.ts`'s `register()` now uniquifies the name it
+signs up with internally, `memberId()` matches that name as a prefix) and
+re-running the full suite with `--no-file-parallelism` dropped the failure
+count to exactly one real bug: a test that re-logged-in using the literal
+string `"Sam"`, which was never actually the registered name once
+`register()` started uniquifying it.
+
+That comparison is also what explains the remaining timeouts honestly,
+rather than papering over them: every spec file shares one real dev server
+and one SQLite file, by design (there's nothing else to point the tests at),
+and vitest's default is to run test files in parallel worker processes —
+fine for isolated unit tests, not for several files firing many requests at
+one shared process at once. `vitest.config.ts` now runs spec files
+one at a time (`fileParallelism: false`) rather than quietly loosening the
+timeout to paper over contention; the real bug it had been hiding is fixed
+in `spec/scorekeeping.test.ts` directly. `pnpm check` is 39/39 clean as of
+the commits above.
