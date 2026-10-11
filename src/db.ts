@@ -73,6 +73,17 @@ function addAvatarColumnsIfMissing(table: "members" | "groups"): void {
 addAvatarColumnsIfMissing("members");
 addAvatarColumnsIfMissing("groups");
 
+// Migration: a group's profile --- bio and tags --- is mandatory for a group
+// created from here on (src/server.ts enforces that), but nullable here so a
+// group created before this feature shipped still loads instead of 500ing.
+const groupColumns = db.prepare("PRAGMA table_info(groups)").all() as Array<{ name: string }>;
+if (!groupColumns.some((c) => c.name === "bio")) {
+  db.exec("ALTER TABLE groups ADD COLUMN bio TEXT");
+}
+if (!groupColumns.some((c) => c.name === "tags")) {
+  db.exec("ALTER TABLE groups ADD COLUMN tags TEXT"); // comma-separated; parseTags()/joinTags() below
+}
+
 // Migration: results predate member accounts entirely --- winner/loser were
 // (and still are, for display) free text. These columns let a *new* result
 // point at the real member it was logged against, without touching old rows.
@@ -94,7 +105,24 @@ export interface Group extends Avatar {
   id: number;
   code: string;
   name: string;
+  bio: string | null;
+  tags: string | null; // comma-separated --- see parseTags()
   created_at: string;
+}
+
+/** `tags` is stored as one comma-separated column rather than a side table
+ * --- there's no querying by tag, they're purely descriptive, so a join
+ * would buy nothing a split() doesn't already give for free. */
+export function parseTags(tags: string | null): string[] {
+  if (!tags) return [];
+  return tags
+    .split(",")
+    .map((t) => t.trim())
+    .filter(Boolean);
+}
+
+export function joinTags(tags: string[]): string {
+  return tags.map((t) => t.trim()).filter(Boolean).join(",");
 }
 
 export interface Result {
@@ -118,12 +146,20 @@ function randomCode(length = 6): string {
   return out;
 }
 
-export function createGroup(name: string): Group {
+/**
+ * `bio` and `tags` are required by the HTTP layer (src/server.ts), not
+ * here --- this function just stores whatever it's given, the same way
+ * addResult() trusts its caller to have already checked membership. Avatar
+ * is set separately via setGroupAvatar() once the row (and its id) exists.
+ */
+export function createGroup(name: string, bio: string, tags: string[]): Group {
   let code = randomCode();
   while (getGroupByCode(code)) code = randomCode();
-  db.prepare("INSERT INTO groups (code, name, created_at) VALUES (?, ?, ?)").run(
+  db.prepare("INSERT INTO groups (code, name, bio, tags, created_at) VALUES (?, ?, ?, ?, ?)").run(
     code,
     name,
+    bio,
+    joinTags(tags),
     new Date().toISOString(),
   );
   return getGroupByCode(code)!;

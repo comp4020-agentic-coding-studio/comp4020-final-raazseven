@@ -23,6 +23,8 @@ import {
 
 interface SeedGroup {
   name: string;
+  bio: string;
+  tags: string[];
   members: Array<{ name: string; password: string }>;
   results: Array<{ game: string; winner: string; loser: string }>;
 }
@@ -30,6 +32,8 @@ interface SeedGroup {
 const SEED_GROUPS: SeedGroup[] = [
   {
     name: "The Office FIFA League",
+    bio: "Lunch-break FIFA, settled with a controller and a grudge.",
+    tags: ["FIFA", "NBA 2K"],
     members: [
       { name: "Priya", password: "password123" },
       { name: "Marcus", password: "password123" },
@@ -45,6 +49,8 @@ const SEED_GROUPS: SeedGroup[] = [
   },
   {
     name: "Uni Housemates",
+    bio: "Whatever's on the coffee table on a Friday night.",
+    tags: ["Mario Kart", "Chess", "Trivia"],
     members: [
       { name: "Jules", password: "password123" },
       { name: "Noa", password: "password123" },
@@ -58,6 +64,8 @@ const SEED_GROUPS: SeedGroup[] = [
   },
   {
     name: "Soccer Saturdays",
+    bio: "Five-a-side every Saturday morning, rain or shine.",
+    tags: ["Soccer", "1v1 soccer"],
     members: [
       { name: "Dante", password: "password123" },
       { name: "Esi", password: "password123" },
@@ -118,7 +126,7 @@ for (const spec of SEED_GROUPS) {
     continue;
   }
 
-  const group = createGroup(spec.name);
+  const group = createGroup(spec.name, spec.bio, spec.tags);
   createdGroups.set(spec.name, group);
   console.log(`+ "${spec.name}" --- code ${group.code}`);
 

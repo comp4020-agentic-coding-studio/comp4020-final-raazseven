@@ -309,6 +309,42 @@ export const baseStyles = `
     outline-offset: 1px;
   }
 
+  textarea {
+    font: inherit;
+    font-size: 1rem;
+    padding: 0.6rem 0.7rem;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg);
+    color: var(--text);
+    width: 100%;
+    resize: vertical;
+    min-height: 3.2rem;
+  }
+
+  textarea:focus {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+
+  .tag-pill {
+    display: inline-block;
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: var(--accent-teal);
+    background: color-mix(in srgb, var(--accent-teal) 15%, transparent);
+    padding: 0.2rem 0.55rem;
+    border-radius: 999px;
+    margin: 0 0.3rem 0.3rem 0;
+  }
+
+  .group-bio {
+    color: var(--text);
+    margin: 0.5rem 0;
+  }
+
   select {
     font: inherit;
     font-size: 1rem;

@@ -1,5 +1,5 @@
 import type { Group, GroupMatch, Member, Result } from "./db.ts";
-import { getGroupById } from "./db.ts";
+import { getGroupById, parseTags } from "./db.ts";
 import { baseStyles, iconChip, logoMark, siteHeader } from "./styles.ts";
 
 function escapeHtml(s: string): string {
@@ -51,7 +51,15 @@ function avatarImg(src: string, alt: string, size: "sm" | "md" | "lg" = "sm"): s
   }" height="${size === "lg" ? 56 : size === "md" ? 40 : 28}" />`;
 }
 
-export function homePage(): string {
+export interface HomePageOptions {
+  createError?: string;
+  /** What to put back in the form after a failed submit --- everything except
+   * the file, which HTML has no way to hand back to a form. */
+  prefill?: { name?: string; bio?: string; tags?: string };
+}
+
+export function homePage(opts: HomePageOptions = {}): string {
+  const prefill = opts.prefill ?? {};
   return layout(
     "Score's in Check",
     `<section class="hero">
@@ -150,10 +158,17 @@ export function homePage(): string {
     <div class="cards-row">
       <div class="card action-section" id="signup">
         <h2 style="margin-top:0">Sign up &mdash; start a new group</h2>
-        <p class="lede" style="font-size:0.85rem">You'll get a share code first, then create your own account inside it.</p>
-        <form method="post" action="/groups">
+        <p class="lede" style="font-size:0.85rem">A name, a bio, at least one game tag, and a photo --- your group's profile, before anyone's logged a single result. You'll create your own personal account on the next page.</p>
+        ${opts.createError ? `<p class="error-text">${escapeHtml(opts.createError)}</p>` : ""}
+        <form method="post" action="/groups" enctype="multipart/form-data">
           <label for="name">Group name</label>
-          <input id="name" name="name" required placeholder="e.g. The Office FIFA League" />
+          <input id="name" name="name" required placeholder="e.g. The Office FIFA League" value="${escapeHtml(prefill.name ?? "")}" />
+          <label for="bio">Bio</label>
+          <textarea id="bio" name="bio" required rows="2" placeholder="Who you are and why you keep score">${escapeHtml(prefill.bio ?? "")}</textarea>
+          <label for="tags">Game tags</label>
+          <input id="tags" name="tags" required placeholder="e.g. FIFA, Trivia, Board games" value="${escapeHtml(prefill.tags ?? "")}" />
+          <label for="group-photo">Group photo</label>
+          <input id="group-photo" name="avatar" type="file" accept="image/png,image/jpeg,image/webp" required />
           <button type="submit">Create group</button>
         </form>
       </div>
@@ -358,6 +373,14 @@ export function groupPage(
         <p class="lede" style="margin-top:0">Share this code so friends can find this group: <span class="code-chip">${code}</span></p>
       </div>
     </div>
+    ${group.bio ? `<p class="group-bio">${escapeHtml(group.bio)}</p>` : ""}
+    ${
+      parseTags(group.tags).length > 0
+        ? `<div class="group-tags">${parseTags(group.tags)
+            .map((t) => `<span class="tag-pill">${escapeHtml(t)}</span>`)
+            .join("")}</div>`
+        : ""
+    }
     ${
       member
         ? `<form class="avatar-upload" method="post" action="/g/${code}/avatar" enctype="multipart/form-data">

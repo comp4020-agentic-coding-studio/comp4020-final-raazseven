@@ -15,6 +15,7 @@ import {
   memberByToken,
   membersForGroup,
   NameTakenError,
+  parseTags,
   registerMember,
   resultsForGroup,
   setGroupAvatar,
@@ -110,10 +111,52 @@ app.get("/readme/", async (_req, reply) => {
   reply.type("text/html").send(renderReadme());
 });
 
-app.post<{ Body: { name: string } }>("/groups", async (req, reply) => {
-  const name = req.body.name?.trim();
-  if (!name) return reply.code(400).send("group name is required");
-  const group = createGroup(name);
+// Starting a group now takes a whole profile, not just a name: a bio, at
+// least one game tag, and a photo are all mandatory, so there's something
+// real to show the first time someone else lands on the group's page before
+// any result has been logged. multipart (not formbody) because the photo
+// has to travel in the same request --- req.parts() reads the text fields
+// and the file together in one pass.
+app.post("/groups", async (req, reply) => {
+  const fields: Record<string, string> = {};
+  let avatarBuffer: Buffer | undefined;
+  let avatarMime: string | undefined;
+  let avatarTruncated = false;
+  let sawAvatarFile = false;
+
+  for await (const part of req.parts()) {
+    if (part.type === "file") {
+      if (part.fieldname === "avatar") {
+        sawAvatarFile = true;
+        avatarBuffer = await part.toBuffer();
+        avatarMime = part.mimetype;
+        avatarTruncated = part.file.truncated;
+      }
+    } else {
+      fields[part.fieldname] = part.value as string;
+    }
+  }
+
+  const name = fields.name?.trim();
+  const bio = fields.bio?.trim();
+  const tags = parseTags(fields.tags ?? "");
+  const prefill = { name: fields.name, bio: fields.bio, tags: fields.tags };
+  const fail = (createError: string) => reply.type("text/html").send(homePage({ createError, prefill }));
+
+  if (!name) return fail("a group name is required");
+  if (!bio) return fail("a short bio for the group is required");
+  if (tags.length === 0) return fail("at least one game tag is required (e.g. FIFA, Trivia)");
+  if (!sawAvatarFile || !avatarBuffer) return fail("a group photo is required");
+  if (avatarTruncated) return fail(`the photo must be ${AVATAR_MAX_BYTES / 1024}KB or smaller`);
+  try {
+    validateAvatarUpload(avatarMime!, avatarBuffer.length);
+  } catch (err) {
+    if (err instanceof AvatarTooLargeError || err instanceof UnsupportedAvatarTypeError) return fail(err.message);
+    throw err;
+  }
+
+  const group = createGroup(name, bio, tags);
+  setGroupAvatar(group.id, avatarBuffer, avatarMime!);
   reply.redirect(`/g/${group.code}`, 303);
 });
 
