@@ -1,6 +1,6 @@
 import type { Group, GroupMatch, Member, Result } from "./db.ts";
 import { getGroupById } from "./db.ts";
-import { baseStyles, logoMark, siteHeader } from "./styles.ts";
+import { baseStyles, iconChip, logoMark, siteHeader } from "./styles.ts";
 
 function escapeHtml(s: string): string {
   return s
@@ -22,6 +22,9 @@ const layout = (title: string, body: string, script?: string, showNav = false) =
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>${escapeHtml(title)}</title>
     <link rel="icon" type="image/svg+xml" href="${faviconHref}" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@600;700;800&display=swap" rel="stylesheet" />
     <style>${baseStyles}</style>
   </head>
   <body>
@@ -52,32 +55,62 @@ export function homePage(): string {
   return layout(
     "Score's in Check",
     `<section class="hero">
-      <div class="logo-mark">${logoMark(56)}</div>
-      <h1>Stop arguing about who's actually winning.</h1>
-      <p class="lede">
-        Score's in Check is the record your friend group actually keeps up
-        to date: real accounts, every result logged as it happens, visible
-        to everyone the second it's in.
-      </p>
-      <div class="hero-actions">
-        <a class="btn-solid" href="#signup">Sign up &mdash; start your group</a>
-        <a class="btn-ghost" href="#login">Log in with a code</a>
+      <div class="hero-grid">
+        <div class="hero-content">
+          <div class="logo-mark hero-animate">${logoMark(56)}</div>
+          <h1 class="hero-animate">Stop arguing about who's actually winning.</h1>
+          <p class="lede hero-animate">
+            Score's in Check is the record your friend group actually keeps up
+            to date: real accounts, every result logged as it happens, visible
+            to everyone the second it's in.
+          </p>
+          <div class="hero-actions hero-animate">
+            <a class="btn-solid" href="#signup">Sign up &mdash; start your group</a>
+            <a class="btn-ghost" href="#login">Log in with a code</a>
+          </div>
+        </div>
+        <div class="hero-visual hero-animate">
+          <div class="mockup-window">
+            <div class="mockup-chrome">
+              <span class="dot dot-red"></span><span class="dot dot-amber"></span><span class="dot dot-green"></span>
+              <span class="mockup-url">scoresincheck.app/g/ABC123</span>
+            </div>
+            <div class="mockup-body">
+              <div class="mockup-live"><span class="live-dot"></span> Live</div>
+              <div class="mockup-row">
+                <span class="mockup-avatar" style="background:#4f46e5">P</span>
+                <span><strong>Priya</strong> beat Marcus</span>
+                <span class="mockup-game">FIFA</span>
+              </div>
+              <div class="mockup-row">
+                <span class="mockup-avatar" style="background:#0d9488">T</span>
+                <span><strong>Tala</strong> beat Winston</span>
+                <span class="mockup-game">NBA 2K</span>
+              </div>
+              <div class="mockup-row">
+                <span class="mockup-avatar" style="background:#db2777">M</span>
+                <span><strong>Marcus</strong> beat Tala</span>
+                <span class="mockup-game">FIFA</span>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </section>
 
     <div class="steps">
       <div class="step">
-        <span class="step-number">1</span>
+        ${iconChip("signin", "indigo")}
         <h3>Start a group, or join one</h3>
         <p>Create your own group and get a share code, or enter a friend's code to land on theirs.</p>
       </div>
       <div class="step">
-        <span class="step-number">2</span>
+        ${iconChip("account", "teal")}
         <h3>Sign up, then log results</h3>
         <p>Everyone gets their own name and password inside the group --- no logging a result as someone else.</p>
       </div>
       <div class="step">
-        <span class="step-number">3</span>
+        ${iconChip("bolt", "amber")}
         <h3>Watch it settle live</h3>
         <p>Every result, and every group-vs-group match, shows up for everyone open to the page within a second.</p>
       </div>
@@ -89,18 +122,22 @@ export function homePage(): string {
     </div>
     <div class="features">
       <div class="feature">
+        ${iconChip("account", "indigo")}
         <h3>Real members, not typed names</h3>
         <p>A result can only be logged against someone who actually signed up to the group.</p>
       </div>
       <div class="feature">
+        ${iconChip("bolt", "amber")}
         <h3>Live, not eventually</h3>
         <p>No refresh button. A result logged on one phone appears on everyone else's open page right away.</p>
       </div>
       <div class="feature">
+        ${iconChip("vs", "pink")}
         <h3>Group vs. group</h3>
         <p>Played another friend group for real? Log the final score once, and it's on both groups' pages.</p>
       </div>
       <div class="feature">
+        ${iconChip("camera", "teal")}
         <h3>A face, not just a name</h3>
         <p>Every member and group gets a profile photo &mdash; generated instantly, or upload your own.</p>
       </div>
@@ -335,9 +372,9 @@ export function groupPage(
         ${groupMatchCard}
       </div>
       <div class="group-layout-feed">
-        <h2>Results</h2>
+        <h2 class="h2-live"><span class="live-dot"></span>Results</h2>
         <div id="results-list">${resultsListFragment(group, results)}</div>
-        <h2>Group matches</h2>
+        <h2 class="h2-live"><span class="live-dot"></span>Group matches</h2>
         <div id="group-matches-list">${groupMatchesFragment(group, groupMatches)}</div>
       </div>
     </div>`,
