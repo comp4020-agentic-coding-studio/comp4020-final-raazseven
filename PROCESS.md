@@ -189,6 +189,44 @@ profile. Rather than patch five near-identical copies, I pulled them into
 one `spec/support.ts`
 ([`0ad6626`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/0ad6626)).
 
+### Three corrections to the group-profile feature
+
+All three directed live, each one catching something the previous round got
+wrong rather than adding something new:
+
+- **The photo shouldn't have been mandatory**
+  ([`30d9971`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/30d9971)).
+  Requiring an upload to create a group broke the pattern a member's own
+  avatar already followed (generated automatically, free to replace) for no
+  reason tied to the brief — fixed by making the photo a choice ("generate
+  one for me" or "upload a photo"), with the file input's `hidden`/`required`
+  state toggled by a small script that degrades gracefully without JS.
+- **"Tags" were a free-text box, not real tags**
+  ([`33aca0e`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/33aca0e)).
+  Replaced the comma-separated column with an actual `tags`/`group_tags`
+  schema: ~39 curated entries across three categories (video games,
+  real-world sports, board & card games) picked via checkbox chips, plus a
+  free-text field for anything not listed that becomes a real row
+  (`findOrCreateTag`), not a second storage mechanism. The one subtlety:
+  multipart fields collected as single values silently keep only the last of
+  several same-named parts, which is exactly what a repeated checkbox name
+  sends — caught before it shipped by collecting fields as arrays instead.
+- **The form had outgrown the home page**
+  ([`1096d89`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/1096d89)).
+  A name/bio/39-tag-picker/photo form squeezed into half of a two-column row
+  next to a one-field "log in" card left the two wildly mismatched in
+  height — the layout problem was the symptom, the actual issue was that a
+  form that size doesn't belong on a landing page. Moved to its own `/new`
+  page; the home page's "Sign up" card is a sentence and a button again.
+
+Each of the three followed the same shape: the agent built something that
+was literally correct against what I'd asked for, and I only caught the
+actual UX consequence once I saw it running — consistency with the avatar
+pattern already in the app, what "real" tags actually means, what happens to
+a card's layout as its form keeps growing. None of the three needed a new
+plan, just a clearer instruction once I'd seen the problem for myself rather
+than approving the literal ask on the first pass.
+
 ## Directing, grounding and correcting
 
 ### Crit 8
@@ -256,4 +294,18 @@ in [`0ad6626`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-
 (the group-match live event, the tied-score outcome branch, duplicate-name
 and wrong-password rejection) — none of them new bugs, all of them real
 holes in "tested" that had been sitting there since crit 8 and earlier in
-crit 9. `pnpm check` is 25/25 as of that commit.
+crit 9. `pnpm check` is 30/30 as of
+[`1096d89`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/1096d89),
+the most recent commit.
+
+A second direct question — "check if all the crit 9 requirements are met" —
+is what caught this file itself falling behind: three commits
+(`30d9971`, `33aca0e`, `1096d89`, all above) had landed without a matching
+update here, which is exactly the kind of gap "a process overview in
+PROCESS.md" is checking for. Re-verified rather than assumed from memory at
+that point: `pnpm check` 30/30 fresh, `node scripts/check-evidence.ts`
+clean, and the SSE real-time check re-run against the live
+`comp4020-final-raazseven.fly.dev` URL on its current deploy (not the one
+from earlier in the week) — a result logged from one request arrived on a
+second, independently-opened stream within about two seconds, through Fly's
+actual proxy.

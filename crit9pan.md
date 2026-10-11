@@ -236,3 +236,27 @@ rendered page after the fact; the tied-score "drew with" outcome branch was
 never exercised; registering a duplicate name and logging in with the wrong
 password were both enforced in `src/db.ts` but never asserted by a spec
 test) and are closed now rather than left for later. `pnpm check`: 25/25.
+
+## Addendum 3: three corrections to the group-profile feature
+
+The mandatory photo, the free-text "tags," and the home-page card were each
+revisited once actually used, in that order:
+
+- The mandatory photo was dropped in favour of a choice ("generate one for
+  me" / "upload a photo") — it had broken the generated-by-default pattern
+  members already had, for no reason the brief asked for.
+- "Tags" became a real `tags`/`group_tags` schema (~39 curated entries
+  across video games / real-world sports / board & card games, picked via
+  checkbox chips, plus a free-text field that creates a real row rather than
+  a second storage mechanism) instead of a comma-separated text box.
+- The whole form moved off the home page to its own `/new` route once it was
+  clear a name/bio/tag-picker/photo form squeezed into half a two-column row
+  next to a one-field "log in" card was never going to look balanced no
+  matter how the CSS was tuned — the mismatch was the symptom, not the bug.
+
+A later direct question — "check if all the crit 9 requirements are met" —
+caught this file and `PROCESS.md` both falling behind these three commits.
+Re-verified rather than assumed at that point: `pnpm check` 30/30, and the
+SSE real-time check re-run against the *current* live deploy (not the one
+checked earlier in the week), confirming a result still arrives on a second
+open session within about two seconds through Fly's actual proxy.
