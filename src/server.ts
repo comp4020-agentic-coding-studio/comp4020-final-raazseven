@@ -111,26 +111,33 @@ app.get("/readme/", async (_req, reply) => {
   reply.type("text/html").send(renderReadme());
 });
 
-// Starting a group now takes a whole profile, not just a name: a bio, at
-// least one game tag, and a photo are all mandatory, so there's something
-// real to show the first time someone else lands on the group's page before
-// any result has been logged. multipart (not formbody) because the photo
-// has to travel in the same request --- req.parts() reads the text fields
-// and the file together in one pass.
+// Starting a group now takes a whole profile, not just a name: a bio and at
+// least one game tag are mandatory, so there's something real to show the
+// first time someone else lands on the group's page before any result has
+// been logged. The photo is a choice, not a requirement, matching how a
+// member's own avatar already works (src/avatars.ts): upload one, or get a
+// generated one for free --- a group is never left with no avatar at all,
+// it just isn't forced through an upload to get one. multipart (not
+// formbody) because a photo, when there is one, has to travel in the same
+// request as the text fields --- req.parts() reads both in one pass.
 app.post("/groups", async (req, reply) => {
   const fields: Record<string, string> = {};
   let avatarBuffer: Buffer | undefined;
   let avatarMime: string | undefined;
   let avatarTruncated = false;
-  let sawAvatarFile = false;
 
   for await (const part of req.parts()) {
     if (part.type === "file") {
       if (part.fieldname === "avatar") {
-        sawAvatarFile = true;
-        avatarBuffer = await part.toBuffer();
-        avatarMime = part.mimetype;
-        avatarTruncated = part.file.truncated;
+        const buffer = await part.toBuffer();
+        // An unselected <input type="file"> still arrives as an empty file
+        // part in most browsers, not as a missing field --- only treat it
+        // as "a photo was offered" once it actually has bytes.
+        if (buffer.length > 0) {
+          avatarBuffer = buffer;
+          avatarMime = part.mimetype;
+          avatarTruncated = part.file.truncated;
+        }
       }
     } else {
       fields[part.fieldname] = part.value as string;
@@ -146,17 +153,18 @@ app.post("/groups", async (req, reply) => {
   if (!name) return fail("a group name is required");
   if (!bio) return fail("a short bio for the group is required");
   if (tags.length === 0) return fail("at least one game tag is required (e.g. FIFA, Trivia)");
-  if (!sawAvatarFile || !avatarBuffer) return fail("a group photo is required");
-  if (avatarTruncated) return fail(`the photo must be ${AVATAR_MAX_BYTES / 1024}KB or smaller`);
-  try {
-    validateAvatarUpload(avatarMime!, avatarBuffer.length);
-  } catch (err) {
-    if (err instanceof AvatarTooLargeError || err instanceof UnsupportedAvatarTypeError) return fail(err.message);
-    throw err;
+  if (avatarBuffer) {
+    if (avatarTruncated) return fail(`the photo must be ${AVATAR_MAX_BYTES / 1024}KB or smaller`);
+    try {
+      validateAvatarUpload(avatarMime!, avatarBuffer.length);
+    } catch (err) {
+      if (err instanceof AvatarTooLargeError || err instanceof UnsupportedAvatarTypeError) return fail(err.message);
+      throw err;
+    }
   }
 
   const group = createGroup(name, bio, tags);
-  setGroupAvatar(group.id, avatarBuffer, avatarMime!);
+  if (avatarBuffer) setGroupAvatar(group.id, avatarBuffer, avatarMime!);
   reply.redirect(`/g/${group.code}`, 303);
 });
 

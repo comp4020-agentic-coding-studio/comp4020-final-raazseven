@@ -51,6 +51,27 @@ function avatarImg(src: string, alt: string, size: "sm" | "md" | "lg" = "sm"): s
   }" height="${size === "lg" ? 56 : size === "md" ? 40 : 28}" />`;
 }
 
+// Toggles the file input alongside the generate/upload radio choice below
+// it --- a progressive enhancement, not a dependency: with JS disabled both
+// controls are simply visible together and the file input isn't required,
+// so the generate-by-default path (an empty file part) still works fine.
+const avatarChoiceScript = `
+(function () {
+  var radios = document.querySelectorAll('input[name="avatarChoice"]');
+  var fileInput = document.getElementById("group-photo");
+  if (!radios.length || !fileInput) return;
+  function sync() {
+    var checked = document.querySelector('input[name="avatarChoice"]:checked');
+    var upload = checked && checked.value === "upload";
+    fileInput.hidden = !upload;
+    fileInput.required = !!upload;
+    if (!upload) fileInput.value = "";
+  }
+  radios.forEach(function (r) { r.addEventListener("change", sync); });
+  sync();
+})();
+`;
+
 export interface HomePageOptions {
   createError?: string;
   /** What to put back in the form after a failed submit --- everything except
@@ -158,7 +179,7 @@ export function homePage(opts: HomePageOptions = {}): string {
     <div class="cards-row">
       <div class="card action-section" id="signup">
         <h2 style="margin-top:0">Sign up &mdash; start a new group</h2>
-        <p class="lede" style="font-size:0.85rem">A name, a bio, at least one game tag, and a photo --- your group's profile, before anyone's logged a single result. You'll create your own personal account on the next page.</p>
+        <p class="lede" style="font-size:0.85rem">A name, a bio, and at least one game tag are required --- your group's profile, before anyone's logged a single result. You'll create your own personal account on the next page.</p>
         ${opts.createError ? `<p class="error-text">${escapeHtml(opts.createError)}</p>` : ""}
         <form method="post" action="/groups" enctype="multipart/form-data">
           <label for="name">Group name</label>
@@ -167,8 +188,12 @@ export function homePage(opts: HomePageOptions = {}): string {
           <textarea id="bio" name="bio" required rows="2" placeholder="Who you are and why you keep score">${escapeHtml(prefill.bio ?? "")}</textarea>
           <label for="tags">Game tags</label>
           <input id="tags" name="tags" required placeholder="e.g. FIFA, Trivia, Board games" value="${escapeHtml(prefill.tags ?? "")}" />
-          <label for="group-photo">Group photo</label>
-          <input id="group-photo" name="avatar" type="file" accept="image/png,image/jpeg,image/webp" required />
+          <label>Group photo</label>
+          <div class="avatar-choice">
+            <label class="radio-option"><input type="radio" name="avatarChoice" value="generate" checked /> Generate one for me</label>
+            <label class="radio-option"><input type="radio" name="avatarChoice" value="upload" /> Upload a photo</label>
+          </div>
+          <input id="group-photo" name="avatar" type="file" accept="image/png,image/jpeg,image/webp" hidden />
           <button type="submit">Create group</button>
         </form>
       </div>
@@ -182,7 +207,7 @@ export function homePage(opts: HomePageOptions = {}): string {
         </form>
       </div>
     </div>`,
-    undefined,
+    avatarChoiceScript,
     true,
   );
 }

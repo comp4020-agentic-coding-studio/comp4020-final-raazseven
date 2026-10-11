@@ -309,6 +309,36 @@ export const baseStyles = `
     outline-offset: 1px;
   }
 
+  /* The base "input" rule above is written for text/password/number/file
+     fields; a radio or checkbox needs its native appearance back, not a
+     stretched, padded, bordered box pretending to be a text field. */
+  input[type="radio"], input[type="checkbox"] {
+    width: auto;
+    padding: 0;
+    border: none;
+    border-radius: 0;
+    background: none;
+    accent-color: var(--accent);
+  }
+
+  .avatar-choice {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem 1.25rem;
+    margin-bottom: 0.25rem;
+  }
+
+  .avatar-choice .radio-option {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.9rem;
+    font-weight: 500;
+    text-transform: none;
+    letter-spacing: normal;
+    color: var(--text);
+  }
+
   textarea {
     font: inherit;
     font-size: 1rem;
