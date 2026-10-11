@@ -7,22 +7,30 @@ import {
   addResult,
   createGroup,
   getGroupByCode,
+  getUserById,
   groupMatchesForGroup,
   InvalidCredentialsError,
-  loginMember,
-  logoutMember,
-  memberById,
-  memberByToken,
+  joinGroup,
+  loginUser,
+  logoutUser,
+  memberInGroup,
   membersForGroup,
+  membershipFor,
+  membershipsForUser,
   NameTakenError,
-  registerMember,
+  registerUser,
+  removeMembership,
   resultsForGroup,
   setGroupAvatar,
   setGroupTags,
-  setMemberAvatar,
+  setUserAvatar,
   tagById,
   tagsForGroup,
+  updateGroupProfile,
+  userByToken,
   type Group,
+  type MemberWithRole,
+  type User,
 } from "./db.ts";
 import {
   AVATAR_MAX_BYTES,
@@ -35,9 +43,12 @@ import {
   groupMatchesFragment,
   groupPage,
   homePage,
+  loginPage,
   memberOptionsFragment,
+  mePage,
   newGroupPage,
   resultsListFragment,
+  signupPage,
 } from "./pages.ts";
 import { renderReadme } from "./readme.ts";
 import { broadcast, subscribe } from "./live.ts";
@@ -47,9 +58,12 @@ await app.register(formbody);
 await app.register(cookie);
 await app.register(multipart, { limits: { fileSize: AVATAR_MAX_BYTES } });
 
-const memberCookieName = (code: string) => `member_${code}`;
-const memberCookieOpts = (code: string) => ({
-  path: `/g/${code}`,
+// One global cookie, not one per group (see decisions/0002-global-accounts.md)
+// --- it's the same account everywhere, so there's no "replayed against
+// another group" risk left to path-scope against.
+const SESSION_COOKIE = "session";
+const sessionCookieOpts = () => ({
+  path: "/",
   httpOnly: true,
   sameSite: "lax" as const,
   // Fly's proxy terminates TLS in front of the app (fly.toml), so the browser
@@ -59,28 +73,37 @@ const memberCookieOpts = (code: string) => ({
   maxAge: 60 * 60 * 24 * 365,
 });
 
-function currentMember(req: { cookies: Record<string, string | undefined> }, group: Group) {
-  return memberByToken(group.id, req.cookies[memberCookieName(group.code)]);
+function currentUser(req: { cookies: Record<string, string | undefined> }): User | undefined {
+  return userByToken(req.cookies[SESSION_COOKIE]);
+}
+
+/** Only ever a same-site path --- an unchecked `next` would be an open
+ * redirect (send someone to any URL right after they type their password). */
+function safeNext(raw: string | undefined, fallback: string): string {
+  if (raw && raw.startsWith("/") && !raw.startsWith("//")) return raw;
+  return fallback;
 }
 
 /** Renders the group page with everything it needs, so every route that can
- * fail back to it doesn't have to repeat the four lookups. */
+ * fail back to it doesn't have to repeat the lookups. */
 function renderGroupPage(
   group: Group,
-  member: ReturnType<typeof currentMember>,
-  errors: { authError?: string; resultError?: string; matchError?: string; avatarError?: string } = {},
+  user: User | undefined,
+  errors: { resultError?: string; matchError?: string; avatarError?: string; profileError?: string } = {},
 ): string {
+  const membership = user ? membershipFor(user.id, group.id) : undefined;
   return groupPage(
     group,
     resultsForGroup(group.id),
     membersForGroup(group.id),
     groupMatchesForGroup(group.id),
     tagsForGroup(group.id),
-    member,
-    errors.authError,
+    user,
+    membership?.role,
     errors.resultError,
     errors.matchError,
     errors.avatarError,
+    errors.profileError,
   );
 }
 
@@ -113,28 +136,109 @@ function sendAvatar(
   }
 }
 
-app.get("/", async (_req, reply) => {
-  reply.type("text/html").send(homePage());
+app.get("/", async (req, reply) => {
+  reply.type("text/html").send(homePage(currentUser(req)));
 });
 
-app.get("/new", async (_req, reply) => {
-  reply.type("text/html").send(newGroupPage());
+app.get<{ Querystring: { next?: string } }>("/new", async (req, reply) => {
+  const user = currentUser(req);
+  if (!user) return reply.redirect(`/signup?next=${encodeURIComponent("/new")}`, 303);
+  reply.type("text/html").send(newGroupPage(user));
 });
 
-app.get("/readme/", async (_req, reply) => {
-  reply.type("text/html").send(renderReadme());
+app.get("/readme/", async (req, reply) => {
+  reply.type("text/html").send(renderReadme(currentUser(req)));
 });
 
-// Starting a group now takes a whole profile, not just a name: a bio and at
-// least one game tag are mandatory, so there's something real to show the
-// first time someone else lands on the group's page before any result has
-// been logged. The photo is a choice, not a requirement, matching how a
-// member's own avatar already works (src/avatars.ts): upload one, or get a
-// generated one for free --- a group is never left with no avatar at all,
-// it just isn't forced through an upload to get one. multipart (not
-// formbody) because a photo, when there is one, has to travel in the same
-// request as the text fields --- req.parts() reads both in one pass.
+app.get<{ Querystring: { next?: string } }>("/signup", async (req, reply) => {
+  reply.type("text/html").send(signupPage({ next: safeNext(req.query.next, "/me") }));
+});
+
+app.post<{ Body: { name: string; password: string; next?: string } }>("/signup", async (req, reply) => {
+  const name = req.body.name?.trim();
+  const password = req.body.password ?? "";
+  const next = safeNext(req.body.next, "/me");
+  const fail = (createError: string) =>
+    reply.type("text/html").send(signupPage({ createError, next, prefill: { name: req.body.name } }));
+
+  if (!name || password.length < 6) {
+    return fail("a name and a password of at least 6 characters are required");
+  }
+  let user: User;
+  try {
+    user = registerUser(name, password);
+  } catch (err) {
+    if (err instanceof NameTakenError) return fail(err.message);
+    throw err;
+  }
+  reply.setCookie(SESSION_COOKIE, user.token, sessionCookieOpts()).redirect(next, 303);
+});
+
+app.get<{ Querystring: { next?: string } }>("/login", async (req, reply) => {
+  reply.type("text/html").send(loginPage({ next: safeNext(req.query.next, "/me") }));
+});
+
+app.post<{ Body: { name: string; password: string; next?: string } }>("/login", async (req, reply) => {
+  const name = req.body.name?.trim();
+  const password = req.body.password ?? "";
+  const next = safeNext(req.body.next, "/me");
+
+  let user: User;
+  try {
+    user = loginUser(name ?? "", password);
+  } catch (err) {
+    if (err instanceof InvalidCredentialsError) {
+      return reply.type("text/html").send(loginPage({ createError: err.message, next, prefill: { name } }));
+    }
+    throw err;
+  }
+  reply.setCookie(SESSION_COOKIE, user.token, sessionCookieOpts()).redirect(next, 303);
+});
+
+app.post("/logout", async (req, reply) => {
+  const user = currentUser(req);
+  if (user) logoutUser(user.id);
+  reply.clearCookie(SESSION_COOKIE, { path: "/" }).redirect("/", 303);
+});
+
+app.get("/me", async (req, reply) => {
+  const user = currentUser(req);
+  if (!user) return reply.redirect(`/login?next=${encodeURIComponent("/me")}`, 303);
+  reply.type("text/html").send(mePage(user, membershipsForUser(user.id)));
+});
+
+app.post("/me/avatar", async (req, reply) => {
+  const user = currentUser(req);
+  if (!user) return reply.redirect(`/login?next=${encodeURIComponent("/me")}`, 303);
+
+  try {
+    const data = await req.file();
+    if (!data) throw new UnsupportedAvatarTypeError("no file was uploaded");
+    const buffer = await data.toBuffer();
+    if (data.file.truncated) throw new AvatarTooLargeError(`avatars must be ${AVATAR_MAX_BYTES / 1024}KB or smaller`);
+    validateAvatarUpload(data.mimetype, buffer.length);
+    setUserAvatar(user.id, buffer, data.mimetype);
+  } catch (err) {
+    if (err instanceof AvatarTooLargeError || err instanceof UnsupportedAvatarTypeError) {
+      return reply.type("text/html").send(mePage(user, membershipsForUser(user.id), err.message));
+    }
+    throw err;
+  }
+  reply.redirect("/me", 303);
+});
+
+app.get<{ Params: { id: string } }>("/users/:id/avatar", async (req, reply) => {
+  // A user's photo is public (shown in any group they're in, to anyone who
+  // can see that group) the same way a group's photo already is.
+  const found = getUserById(Number(req.params.id));
+  if (!found) return reply.code(404).send("no such user");
+  sendAvatar(req, reply, found, found.name);
+});
+
 app.post("/groups", async (req, reply) => {
+  const user = currentUser(req);
+  if (!user) return reply.redirect(`/signup?next=${encodeURIComponent("/new")}`, 303);
+
   // A field can repeat (every checked "tagIds" checkbox arrives as its own
   // part under the same name), so every text field is collected as an array
   // and single-value fields just read [0].
@@ -175,7 +279,7 @@ app.post("/groups", async (req, reply) => {
     .map((id) => Number(id))
     .filter((id) => Number.isInteger(id) && tagById(id) !== undefined);
   const prefill = { name: fields.name?.[0], bio: fields.bio?.[0], tagIds, customTags: customTagsRaw };
-  const fail = (createError: string) => reply.type("text/html").send(newGroupPage({ createError, prefill }));
+  const fail = (createError: string) => reply.type("text/html").send(newGroupPage(user, { createError, prefill }));
 
   if (!name) return fail("a group name is required");
   if (!bio) return fail("a short bio for the group is required");
@@ -195,6 +299,7 @@ app.post("/groups", async (req, reply) => {
   const group = createGroup(name, bio);
   setGroupTags(group.id, tagIds, customNames);
   if (avatarBuffer) setGroupAvatar(group.id, avatarBuffer, avatarMime!);
+  joinGroup(user.id, group.id, "owner");
   reply.redirect(`/g/${group.code}`, 303);
 });
 
@@ -207,8 +312,7 @@ app.get<{ Querystring: { code?: string } }>("/g", async (req, reply) => {
 app.get<{ Params: { code: string } }>("/g/:code", async (req, reply) => {
   const group = getGroupByCode(req.params.code.toUpperCase());
   if (!group) return reply.code(404).send("no group with that code");
-  const member = currentMember(req, group);
-  reply.type("text/html").send(renderGroupPage(group, member));
+  reply.type("text/html").send(renderGroupPage(group, currentUser(req)));
 });
 
 // Server-sent events: one open connection per viewer, scoped to this group.
@@ -237,72 +341,17 @@ app.get<{ Params: { code: string } }>("/g/:code/events", async (req, reply) => {
   reply.hijack();
 });
 
-app.post<{ Params: { code: string }; Body: { name: string; password: string } }>(
-  "/g/:code/register",
-  async (req, reply) => {
-    const group = getGroupByCode(req.params.code.toUpperCase());
-    if (!group) return reply.code(404).send("no group with that code");
-    const name = req.body.name?.trim();
-    const password = req.body.password ?? "";
-    if (!name || password.length < 6) {
-      return reply
-        .type("text/html")
-        .send(renderGroupPage(group, undefined, { authError: "a name and a password of at least 6 characters are required" }));
-    }
-
-    let member;
-    try {
-      member = registerMember(group.id, name, password);
-    } catch (err) {
-      if (err instanceof NameTakenError) {
-        return reply.type("text/html").send(renderGroupPage(group, undefined, { authError: err.message }));
-      }
-      throw err;
-    }
-
-    broadcast(group.code, { type: "member", html: memberOptionsFragment(membersForGroup(group.id)) });
-
-    reply.setCookie(memberCookieName(group.code), member.token, memberCookieOpts(group.code)).redirect(
-      `/g/${group.code}`,
-      303,
-    );
-  },
-);
-
-app.post<{ Params: { code: string }; Body: { name: string; password: string } }>(
-  "/g/:code/login",
-  async (req, reply) => {
-    const group = getGroupByCode(req.params.code.toUpperCase());
-    if (!group) return reply.code(404).send("no group with that code");
-    const name = req.body.name?.trim();
-    const password = req.body.password ?? "";
-
-    let member;
-    try {
-      member = loginMember(group.id, name ?? "", password);
-    } catch (err) {
-      if (err instanceof InvalidCredentialsError) {
-        return reply.type("text/html").send(renderGroupPage(group, undefined, { authError: err.message }));
-      }
-      throw err;
-    }
-
-    reply.setCookie(memberCookieName(group.code), member.token, memberCookieOpts(group.code)).redirect(
-      `/g/${group.code}`,
-      303,
-    );
-  },
-);
-
-app.post<{ Params: { code: string } }>("/g/:code/logout", async (req, reply) => {
+app.post<{ Params: { code: string } }>("/g/:code/join", async (req, reply) => {
   const group = getGroupByCode(req.params.code.toUpperCase());
   if (!group) return reply.code(404).send("no group with that code");
-  const member = currentMember(req, group);
-  if (member) logoutMember(member.id);
-  reply.clearCookie(memberCookieName(group.code), { path: `/g/${group.code}` }).redirect(
-    `/g/${group.code}`,
-    303,
-  );
+  const user = currentUser(req);
+  if (!user) return reply.redirect(`/login?next=${encodeURIComponent(`/g/${group.code}`)}`, 303);
+  joinGroup(user.id, group.id, "member");
+  // This used to broadcast from the old per-group /register route; joining
+  // (not signing up, which has no group context at all) is the new "someone
+  // became pickable in the winner/loser dropdowns" moment.
+  broadcast(group.code, { type: "member", html: memberOptionsFragment(membersForGroup(group.id)) });
+  reply.redirect(`/g/${group.code}`, 303);
 });
 
 app.post<{ Params: { code: string }; Body: { game: string; winner: string; loser: string } }>(
@@ -311,11 +360,12 @@ app.post<{ Params: { code: string }; Body: { game: string; winner: string; loser
     const group = getGroupByCode(req.params.code.toUpperCase());
     if (!group) return reply.code(404).send("no group with that code");
 
-    const member = currentMember(req, group);
-    if (!member) {
-      // Not signed in (or the session was invalidated) --- send them to
-      // sign in rather than silently dropping the result.
-      return reply.type("text/html").send(renderGroupPage(group, undefined));
+    const user = currentUser(req);
+    const membership = user ? membershipFor(user.id, group.id) : undefined;
+    if (!user || !membership) {
+      // Not a member of this group (or not signed in at all) --- send them
+      // to join rather than silently dropping the result.
+      return reply.type("text/html").send(renderGroupPage(group, user));
     }
 
     const game = req.body.game?.trim();
@@ -324,21 +374,21 @@ app.post<{ Params: { code: string }; Body: { game: string; winner: string; loser
     if (!game || !Number.isInteger(winnerId) || !Number.isInteger(loserId)) {
       return reply
         .type("text/html")
-        .send(renderGroupPage(group, member, { resultError: "game, winner and loser are all required" }));
+        .send(renderGroupPage(group, user, { resultError: "game, winner and loser are all required" }));
     }
     if (winnerId === loserId) {
       return reply
         .type("text/html")
-        .send(renderGroupPage(group, member, { resultError: "winner and loser can't be the same player" }));
+        .send(renderGroupPage(group, user, { resultError: "winner and loser can't be the same player" }));
     }
     // Both players have to already be members of this group --- a result
     // can't be logged against someone who was never there.
-    const winner = memberById(group.id, winnerId);
-    const loser = memberById(group.id, loserId);
+    const winner = memberInGroup(group.id, winnerId);
+    const loser = memberInGroup(group.id, loserId);
     if (!winner || !loser) {
       return reply
         .type("text/html")
-        .send(renderGroupPage(group, member, { resultError: "winner and loser must both be members of this group" }));
+        .send(renderGroupPage(group, user, { resultError: "winner and loser must both be members of this group" }));
     }
 
     addResult(group.id, game, winnerId, loserId);
@@ -353,8 +403,9 @@ app.post<{ Params: { code: string }; Body: { opponentCode: string; game: string;
     const group = getGroupByCode(req.params.code.toUpperCase());
     if (!group) return reply.code(404).send("no group with that code");
 
-    const member = currentMember(req, group);
-    if (!member) return reply.type("text/html").send(renderGroupPage(group, undefined));
+    const user = currentUser(req);
+    const membership = user ? membershipFor(user.id, group.id) : undefined;
+    if (!user || !membership) return reply.type("text/html").send(renderGroupPage(group, user));
 
     const opponentCode = req.body.opponentCode?.trim().toUpperCase();
     const game = req.body.game?.trim();
@@ -364,16 +415,16 @@ app.post<{ Params: { code: string }; Body: { opponentCode: string; game: string;
 
     if (!opponent || opponent.id === group.id) {
       return reply.type("text/html").send(
-        renderGroupPage(group, member, { matchError: "enter the code of a different, existing group" }),
+        renderGroupPage(group, user, { matchError: "enter the code of a different, existing group" }),
       );
     }
     if (!game || !Number.isInteger(scoreUs) || scoreUs < 0 || !Number.isInteger(scoreThem) || scoreThem < 0) {
       return reply.type("text/html").send(
-        renderGroupPage(group, member, { matchError: "game and both (non-negative, whole-number) scores are required" }),
+        renderGroupPage(group, user, { matchError: "game and both (non-negative, whole-number) scores are required" }),
       );
     }
 
-    addGroupMatch(group.id, opponent.id, game, scoreUs, scoreThem, member.id);
+    addGroupMatch(group.id, opponent.id, game, scoreUs, scoreThem, user.id);
     broadcast(group.code, { type: "group-match", html: groupMatchesFragment(group, groupMatchesForGroup(group.id)) });
     broadcast(opponent.code, {
       type: "group-match",
@@ -383,38 +434,46 @@ app.post<{ Params: { code: string }; Body: { opponentCode: string; game: string;
   },
 );
 
-app.get<{ Params: { code: string; id: string } }>("/g/:code/members/:id/avatar", async (req, reply) => {
-  const group = getGroupByCode(req.params.code.toUpperCase());
-  if (!group) return reply.code(404).send("no group with that code");
-  const member = memberById(group.id, Number(req.params.id));
-  if (!member) return reply.code(404).send("no such member");
-  sendAvatar(req, reply, member, member.name);
-});
+function requireOwner(group: Group, user: User | undefined): string | undefined {
+  if (!user) return "you need to be signed in";
+  const membership = membershipFor(user.id, group.id);
+  if (!membership) return "you're not a member of this group";
+  if (membership.role !== "owner") return "only the group's owner can do that";
+  return undefined;
+}
 
-app.post<{ Params: { code: string; id: string } }>("/g/:code/members/:id/avatar", async (req, reply) => {
-  const group = getGroupByCode(req.params.code.toUpperCase());
-  if (!group) return reply.code(404).send("no group with that code");
-  const member = currentMember(req, group);
-  if (!member || member.id !== Number(req.params.id)) {
-    return reply.code(403).send("you can only update your own photo");
-  }
+app.post<{ Params: { code: string }; Body: { bio: string; tagIds?: string | string[]; customTags?: string } }>(
+  "/g/:code/profile",
+  async (req, reply) => {
+    const group = getGroupByCode(req.params.code.toUpperCase());
+    if (!group) return reply.code(404).send("no group with that code");
+    const user = currentUser(req);
+    const deniedReason = requireOwner(group, user);
+    if (deniedReason) return reply.code(403).send(deniedReason);
 
-  try {
-    const data = await req.file();
-    if (!data) throw new UnsupportedAvatarTypeError("no file was uploaded");
-    const buffer = await data.toBuffer();
-    if (data.file.truncated) throw new AvatarTooLargeError(`avatars must be ${AVATAR_MAX_BYTES / 1024}KB or smaller`);
-    validateAvatarUpload(data.mimetype, buffer.length);
-    setMemberAvatar(member.id, buffer, data.mimetype);
-  } catch (err) {
-    if (err instanceof AvatarTooLargeError || err instanceof UnsupportedAvatarTypeError) {
-      return reply.type("text/html").send(renderGroupPage(group, member, { avatarError: err.message }));
+    const bio = req.body.bio?.trim();
+    const customNames = (req.body.customTags ?? "")
+      .split(",")
+      .map((t) => t.trim())
+      .filter(Boolean);
+    const rawTagIds = req.body.tagIds === undefined ? [] : ([] as string[]).concat(req.body.tagIds);
+    const tagIds = rawTagIds
+      .map((id) => Number(id))
+      .filter((id) => Number.isInteger(id) && tagById(id) !== undefined);
+
+    if (!bio) {
+      return reply.type("text/html").send(renderGroupPage(group, user, { profileError: "a bio is required" }));
     }
-    throw err;
-  }
+    if (tagIds.length === 0 && customNames.length === 0) {
+      return reply
+        .type("text/html")
+        .send(renderGroupPage(group, user, { profileError: "at least one game tag is required" }));
+    }
 
-  reply.redirect(`/g/${group.code}`, 303);
-});
+    updateGroupProfile(group.id, bio, tagIds, customNames);
+    reply.redirect(`/g/${group.code}`, 303);
+  },
+);
 
 app.get<{ Params: { code: string } }>("/g/:code/avatar", async (req, reply) => {
   const group = getGroupByCode(req.params.code.toUpperCase());
@@ -425,8 +484,9 @@ app.get<{ Params: { code: string } }>("/g/:code/avatar", async (req, reply) => {
 app.post<{ Params: { code: string } }>("/g/:code/avatar", async (req, reply) => {
   const group = getGroupByCode(req.params.code.toUpperCase());
   if (!group) return reply.code(404).send("no group with that code");
-  const member = currentMember(req, group);
-  if (!member) return reply.type("text/html").send(renderGroupPage(group, undefined));
+  const user = currentUser(req);
+  const deniedReason = requireOwner(group, user);
+  if (deniedReason) return reply.code(403).send(deniedReason);
 
   try {
     const data = await req.file();
@@ -437,11 +497,26 @@ app.post<{ Params: { code: string } }>("/g/:code/avatar", async (req, reply) => 
     setGroupAvatar(group.id, buffer, data.mimetype);
   } catch (err) {
     if (err instanceof AvatarTooLargeError || err instanceof UnsupportedAvatarTypeError) {
-      return reply.type("text/html").send(renderGroupPage(group, member, { avatarError: err.message }));
+      return reply.type("text/html").send(renderGroupPage(group, user, { avatarError: err.message }));
     }
     throw err;
   }
 
+  reply.redirect(`/g/${group.code}`, 303);
+});
+
+app.post<{ Params: { code: string; userId: string } }>("/g/:code/members/:userId/remove", async (req, reply) => {
+  const group = getGroupByCode(req.params.code.toUpperCase());
+  if (!group) return reply.code(404).send("no group with that code");
+  const user = currentUser(req);
+  const deniedReason = requireOwner(group, user);
+  if (deniedReason) return reply.code(403).send(deniedReason);
+
+  const targetId = Number(req.params.userId);
+  const target: MemberWithRole | undefined = memberInGroup(group.id, targetId);
+  // No ownership transfer feature --- removing the owner (including
+  // yourself) would leave the group with nobody able to manage it.
+  if (target && target.role !== "owner") removeMembership(targetId, group.id);
   reply.redirect(`/g/${group.code}`, 303);
 });
 

@@ -1,8 +1,9 @@
 import { marked } from "marked";
 import { readFileSync } from "node:fs";
+import type { User } from "./db.ts";
 import { baseStyles, siteHeader } from "./styles.ts";
 
-export function renderReadme(): string {
+export function renderReadme(user?: User): string {
   const md = readFileSync("README.md", "utf8");
   const body = marked.parse(md, { async: false });
   return `<!doctype html>
@@ -20,7 +21,7 @@ export function renderReadme(): string {
     </style>
   </head>
   <body>
-    ${siteHeader()}
+    ${siteHeader(user ? { id: user.id, name: user.name } : undefined)}
     <main>
       <div class="card">
         ${body}

@@ -25,9 +25,9 @@ db.exec(`
     created_at TEXT NOT NULL
   );
 
-  -- A "member" is an account scoped to one group: a name, a password, and a
-  -- session token set only after a successful login. The group code gets you
-  -- to the group; an account is what lets you act as a named person in it.
+  -- Superseded by users/memberships below (a "member" used to be an account
+  -- scoped to one group). Kept as the migration source, not dropped --- see
+  -- the migration further down.
   CREATE TABLE IF NOT EXISTS members (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     group_id INTEGER NOT NULL REFERENCES groups(id),
@@ -68,6 +68,33 @@ db.exec(`
     tag_id INTEGER NOT NULL REFERENCES tags(id),
     PRIMARY KEY (group_id, tag_id)
   );
+
+  -- A person, once, globally --- not once per group. "members" (above) was
+  -- the opposite of this; see decisions/0002-global-accounts.md for why that
+  -- changed. name is globally unique (COLLATE NOCASE), where it only had to
+  -- be unique within a group before.
+  CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT UNIQUE NOT NULL COLLATE NOCASE,
+    password_hash TEXT NOT NULL,
+    token TEXT UNIQUE NOT NULL,
+    avatar_blob BLOB,
+    avatar_mime TEXT,
+    avatar_updated_at TEXT,
+    created_at TEXT NOT NULL
+  );
+
+  -- A user's role in one group. A user's groups and a group's members are
+  -- both just queries over this table --- the many-to-many that "members"
+  -- (one row per group, no shared identity) couldn't express.
+  CREATE TABLE IF NOT EXISTS memberships (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    group_id INTEGER NOT NULL REFERENCES groups(id),
+    role TEXT NOT NULL DEFAULT 'member',
+    created_at TEXT NOT NULL,
+    UNIQUE(user_id, group_id)
+  );
 `);
 
 // Migration: earlier deploys created `members` without a password (names
@@ -77,10 +104,11 @@ if (!memberColumns.some((c) => c.name === "password_hash")) {
   db.exec("ALTER TABLE members ADD COLUMN password_hash TEXT NOT NULL DEFAULT ''");
 }
 
-// Migration: avatars are optional on both members and groups --- NULL means
-// "use the generated one" (src/avatars.ts). Added in place so a stranger's
-// data from before this feature survives the deploy that introduces it.
-function addAvatarColumnsIfMissing(table: "members" | "groups"): void {
+// Migration: avatars are optional on members, groups, and (now) users ---
+// NULL means "use the generated one" (src/avatars.ts). Added in place so a
+// stranger's data from before this feature survives the deploy that
+// introduces it.
+function addAvatarColumnsIfMissing(table: "members" | "groups" | "users"): void {
   const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
   const names = new Set(columns.map((c) => c.name));
   if (!names.has("avatar_blob")) db.exec(`ALTER TABLE ${table} ADD COLUMN avatar_blob BLOB`);
@@ -89,6 +117,7 @@ function addAvatarColumnsIfMissing(table: "members" | "groups"): void {
 }
 addAvatarColumnsIfMissing("members");
 addAvatarColumnsIfMissing("groups");
+addAvatarColumnsIfMissing("users"); // users is created with these columns already; a no-op in practice, kept for symmetry
 
 // Migration: a group's profile --- bio is mandatory for a group created from
 // here on (src/server.ts enforces that), but nullable here so a group
@@ -180,14 +209,129 @@ for (const g of groupsWithLegacyTags) {
 }
 
 // Migration: results predate member accounts entirely --- winner/loser were
-// (and still are, for display) free text. These columns let a *new* result
-// point at the real member it was logged against, without touching old rows.
+// (and still are, for display) free text. winner_member_id/loser_member_id
+// let a result from that era point at the real member it was logged
+// against; winner_user_id/loser_user_id (added alongside, not replacing
+// them) do the same for the global-accounts era below. A result logged
+// before either existed, or before this migration ran, simply has both
+// pairs NULL and displays with no avatar --- the same graceful fallback
+// avatars already had before they existed at all.
 const resultColumns = db.prepare("PRAGMA table_info(results)").all() as Array<{ name: string }>;
 if (!resultColumns.some((c) => c.name === "winner_member_id")) {
   db.exec("ALTER TABLE results ADD COLUMN winner_member_id INTEGER REFERENCES members(id)");
 }
 if (!resultColumns.some((c) => c.name === "loser_member_id")) {
   db.exec("ALTER TABLE results ADD COLUMN loser_member_id INTEGER REFERENCES members(id)");
+}
+if (!resultColumns.some((c) => c.name === "winner_user_id")) {
+  db.exec("ALTER TABLE results ADD COLUMN winner_user_id INTEGER REFERENCES users(id)");
+}
+if (!resultColumns.some((c) => c.name === "loser_user_id")) {
+  db.exec("ALTER TABLE results ADD COLUMN loser_user_id INTEGER REFERENCES users(id)");
+}
+
+// Migration: group_matches.logged_by_member_id was declared NOT NULL back
+// when a member was the only kind of account --- SQLite can't relax a NOT
+// NULL constraint with a plain ALTER TABLE, so this rebuilds the table the
+// standard safe way (rename, recreate, copy, drop) the one time it's
+// needed, guarded so it only ever runs once.
+const groupMatchColumns = db.prepare("PRAGMA table_info(group_matches)").all() as Array<{ name: string }>;
+if (!groupMatchColumns.some((c) => c.name === "logged_by_user_id")) {
+  db.exec(`
+    ALTER TABLE group_matches RENAME TO group_matches_pre_accounts;
+
+    CREATE TABLE group_matches (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      group_a_id INTEGER NOT NULL REFERENCES groups(id),
+      group_b_id INTEGER NOT NULL REFERENCES groups(id),
+      game TEXT NOT NULL,
+      score_a INTEGER NOT NULL,
+      score_b INTEGER NOT NULL,
+      logged_by_member_id INTEGER REFERENCES members(id),
+      logged_by_user_id INTEGER REFERENCES users(id),
+      created_at TEXT NOT NULL
+    );
+
+    INSERT INTO group_matches
+      (id, group_a_id, group_b_id, game, score_a, score_b, logged_by_member_id, created_at)
+      SELECT id, group_a_id, group_b_id, game, score_a, score_b, logged_by_member_id, created_at
+      FROM group_matches_pre_accounts;
+
+    DROP TABLE group_matches_pre_accounts;
+  `);
+}
+
+// Migration: every "member" (an account scoped to one group) becomes its
+// OWN new "user" (a global account) plus a membership recording its role in
+// that one group --- never merged by name across groups, since two
+// different real people coincidentally sharing a name is a security bug to
+// avoid, not a convenience to assume. Tracked via members.migrated_user_id
+// so this only ever processes a given old row once. Because a user's name
+// is now globally unique where a member's name only had to be unique within
+// its group, two members who happened to share a name across different
+// groups get a numeric suffix on the second one (`Sam-2`) --- a known rough
+// edge, not solved further, since nothing in this app depends on that
+// continuity yet.
+const membersTableColumns = db.prepare("PRAGMA table_info(members)").all() as Array<{ name: string }>;
+if (!membersTableColumns.some((c) => c.name === "migrated_user_id")) {
+  db.exec("ALTER TABLE members ADD COLUMN migrated_user_id INTEGER REFERENCES users(id)");
+}
+
+function uniqueUserName(desired: string): string {
+  let candidate = desired;
+  for (let suffix = 2; db.prepare("SELECT 1 FROM users WHERE name = ? COLLATE NOCASE").get(candidate); suffix++) {
+    candidate = `${desired}-${suffix}`;
+  }
+  return candidate;
+}
+
+interface LegacyMemberRow {
+  id: number;
+  group_id: number;
+  name: string;
+  password_hash: string;
+  avatar_blob: Buffer | null;
+  avatar_mime: string | null;
+  avatar_updated_at: string | null;
+  created_at: string;
+}
+
+const unmigratedMembers = db
+  .prepare("SELECT * FROM members WHERE migrated_user_id IS NULL")
+  .all() as unknown as LegacyMemberRow[];
+
+if (unmigratedMembers.length > 0) {
+  const earliestMemberIdByGroup = new Map<number, number>();
+  for (const row of db.prepare("SELECT group_id, MIN(id) AS min_id FROM members GROUP BY group_id").all() as Array<{
+    group_id: number;
+    min_id: number;
+  }>) {
+    earliestMemberIdByGroup.set(row.group_id, row.min_id);
+  }
+
+  for (const m of unmigratedMembers) {
+    const name = uniqueUserName(m.name);
+    if (name !== m.name) {
+      console.log(
+        `migration: "${m.name}" (group ${m.group_id}) already taken globally --- creating this account as "${name}" instead`,
+      );
+    }
+    const token = randomBytes(24).toString("base64url");
+    const info = db
+      .prepare(
+        "INSERT INTO users (name, password_hash, token, avatar_blob, avatar_mime, avatar_updated_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      )
+      .run(name, m.password_hash, token, m.avatar_blob, m.avatar_mime, m.avatar_updated_at, m.created_at);
+    const userId = info.lastInsertRowid as number;
+    const role: Role = earliestMemberIdByGroup.get(m.group_id) === m.id ? "owner" : "member";
+    db.prepare("INSERT OR IGNORE INTO memberships (user_id, group_id, role, created_at) VALUES (?, ?, ?, ?)").run(
+      userId,
+      m.group_id,
+      role,
+      m.created_at,
+    );
+    db.prepare("UPDATE members SET migrated_user_id = ? WHERE id = ?").run(userId, m.id);
+  }
 }
 
 export interface Avatar {
@@ -274,8 +418,10 @@ export interface Result {
   game: string;
   winner: string;
   loser: string;
-  winner_member_id: number | null;
-  loser_member_id: number | null;
+  winner_member_id: number | null; // legacy (pre-global-accounts)
+  loser_member_id: number | null; // legacy (pre-global-accounts)
+  winner_user_id: number | null;
+  loser_user_id: number | null;
   created_at: string;
 }
 
@@ -325,17 +471,23 @@ export function setGroupAvatar(groupId: number, blob: Buffer, mime: string): voi
   );
 }
 
+export function updateGroupProfile(groupId: number, bio: string, tagIds: number[], customNames: string[]): void {
+  db.prepare("UPDATE groups SET bio = ? WHERE id = ?").run(bio, groupId);
+  setGroupTags(groupId, tagIds, customNames);
+}
+
 /**
- * Logs a player-level result. `winnerId`/`loserId` must already be members of
- * `groupId` --- the caller (src/server.ts) is responsible for checking that,
- * since this is where the names get denormalised for display.
+ * Logs a player-level result. `winnerId`/`loserId` are user ids and must
+ * already be members of `groupId` --- the caller (src/server.ts) is
+ * responsible for checking that, since this is where the names get
+ * denormalised for display.
  */
 export function addResult(groupId: number, game: string, winnerId: number, loserId: number): Result {
-  const winner = memberById(groupId, winnerId)!;
-  const loser = memberById(groupId, loserId)!;
+  const winner = getUserById(winnerId)!;
+  const loser = getUserById(loserId)!;
   const info = db
     .prepare(
-      "INSERT INTO results (group_id, game, winner, loser, winner_member_id, loser_member_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO results (group_id, game, winner, loser, winner_user_id, loser_user_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
     .run(groupId, game, winner.name, loser.name, winnerId, loserId, new Date().toISOString());
   return db.prepare("SELECT * FROM results WHERE id = ?").get(info.lastInsertRowid) as unknown as Result;
@@ -354,7 +506,8 @@ export interface GroupMatch {
   game: string;
   score_a: number;
   score_b: number;
-  logged_by_member_id: number;
+  logged_by_member_id: number | null; // legacy (pre-global-accounts)
+  logged_by_user_id: number | null;
   created_at: string;
 }
 
@@ -364,13 +517,13 @@ export function addGroupMatch(
   game: string,
   scoreA: number,
   scoreB: number,
-  loggedByMemberId: number,
+  loggedByUserId: number,
 ): GroupMatch {
   const info = db
     .prepare(
-      "INSERT INTO group_matches (group_a_id, group_b_id, game, score_a, score_b, logged_by_member_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO group_matches (group_a_id, group_b_id, game, score_a, score_b, logged_by_user_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
-    .run(groupAId, groupBId, game, scoreA, scoreB, loggedByMemberId, new Date().toISOString());
+    .run(groupAId, groupBId, game, scoreA, scoreB, loggedByUserId, new Date().toISOString());
   return db.prepare("SELECT * FROM group_matches WHERE id = ?").get(info.lastInsertRowid) as unknown as GroupMatch;
 }
 
@@ -383,13 +536,18 @@ export function groupMatchesForGroup(groupId: number): GroupMatch[] {
     .all(groupId, groupId) as unknown as GroupMatch[];
 }
 
-export interface Member extends Avatar {
+export type Role = "owner" | "member";
+
+export interface User extends Avatar {
   id: number;
-  group_id: number;
   name: string;
   password_hash: string;
   token: string;
   created_at: string;
+}
+
+export interface MemberWithRole extends User {
+  role: Role;
 }
 
 export class NameTakenError extends Error {}
@@ -410,65 +568,130 @@ function passwordMatches(password: string, stored: string): boolean {
   return candidate.length === expected.length && timingSafeEqual(candidate, expected);
 }
 
-function freshMemberRow(groupId: number, name: string): Member {
-  return db
-    .prepare("SELECT * FROM members WHERE group_id = ? AND name = ? COLLATE NOCASE")
-    .get(groupId, name) as unknown as Member;
+function freshUserRow(name: string): User | undefined {
+  return db.prepare("SELECT * FROM users WHERE name = ? COLLATE NOCASE").get(name) as User | undefined;
 }
 
-/** Every member of a group, oldest first --- the pool results can be logged against. */
-export function membersForGroup(groupId: number): Member[] {
-  return db.prepare("SELECT * FROM members WHERE group_id = ? ORDER BY created_at ASC").all(groupId) as unknown as
-    Member[];
+export function getUserById(id: number): User | undefined {
+  return db.prepare("SELECT * FROM users WHERE id = ?").get(id) as User | undefined;
 }
 
-export function memberById(groupId: number, id: number): Member | undefined {
-  return db.prepare("SELECT * FROM members WHERE group_id = ? AND id = ?").get(groupId, id) as Member | undefined;
-}
-
-export function setMemberAvatar(memberId: number, blob: Buffer, mime: string): void {
-  db.prepare("UPDATE members SET avatar_blob = ?, avatar_mime = ?, avatar_updated_at = ? WHERE id = ?").run(
+export function setUserAvatar(userId: number, blob: Buffer, mime: string): void {
+  db.prepare("UPDATE users SET avatar_blob = ?, avatar_mime = ?, avatar_updated_at = ? WHERE id = ?").run(
     blob,
     mime,
     new Date().toISOString(),
-    memberId,
+    userId,
   );
 }
 
-/** Creates the account and logs it in (assigns a session token). */
-export function registerMember(groupId: number, name: string, password: string): Member {
-  if (db.prepare("SELECT 1 FROM members WHERE group_id = ? AND name = ? COLLATE NOCASE").get(groupId, name)) {
-    throw new NameTakenError(`"${name}" is already registered in this group`);
+/** Creates the account and logs it in (assigns a session token). Global now
+ * --- `name` has to be unique across every user, not just within one group. */
+export function registerUser(name: string, password: string): User {
+  if (freshUserRow(name)) {
+    throw new NameTakenError(`"${name}" is already taken`);
   }
   const token = randomBytes(24).toString("base64url");
-  db.prepare(
-    "INSERT INTO members (group_id, name, password_hash, token, created_at) VALUES (?, ?, ?, ?, ?)",
-  ).run(groupId, name, hashPassword(password), token, new Date().toISOString());
-  return freshMemberRow(groupId, name);
+  db.prepare("INSERT INTO users (name, password_hash, token, created_at) VALUES (?, ?, ?, ?)").run(
+    name,
+    hashPassword(password),
+    token,
+    new Date().toISOString(),
+  );
+  return freshUserRow(name)!;
 }
 
 /** Verifies the password and issues a new session token (old sessions stop working). */
-export function loginMember(groupId: number, name: string, password: string): Member {
-  const existing = freshMemberRow(groupId, name);
+export function loginUser(name: string, password: string): User {
+  const existing = freshUserRow(name);
   if (!existing || !passwordMatches(password, existing.password_hash)) {
     throw new InvalidCredentialsError("name or password is incorrect");
   }
   const token = randomBytes(24).toString("base64url");
-  db.prepare("UPDATE members SET token = ? WHERE id = ?").run(token, existing.id);
+  db.prepare("UPDATE users SET token = ? WHERE id = ?").run(token, existing.id);
   return { ...existing, token };
 }
 
 /** Ends the session: any cookie carrying the old token stops working. */
-export function logoutMember(memberId: number): void {
-  db.prepare("UPDATE members SET token = ? WHERE id = ?").run(
-    randomBytes(24).toString("base64url"),
-    memberId,
+export function logoutUser(userId: number): void {
+  db.prepare("UPDATE users SET token = ? WHERE id = ?").run(randomBytes(24).toString("base64url"), userId);
+}
+
+export function userByToken(token: string | undefined): User | undefined {
+  if (!token) return undefined;
+  return db.prepare("SELECT * FROM users WHERE token = ?").get(token) as User | undefined;
+}
+
+export interface Membership {
+  id: number;
+  user_id: number;
+  group_id: number;
+  role: Role;
+  created_at: string;
+}
+
+export function membershipFor(userId: number, groupId: number): Membership | undefined {
+  return db.prepare("SELECT * FROM memberships WHERE user_id = ? AND group_id = ?").get(userId, groupId) as
+    | Membership
+    | undefined;
+}
+
+/** Adds a user to a group with the given role --- idempotent: already being
+ * a member is a no-op, not an error, since re-joining a group you're
+ * already in isn't a mistake worth surfacing to anyone. */
+export function joinGroup(userId: number, groupId: number, role: Role = "member"): void {
+  if (membershipFor(userId, groupId)) return;
+  db.prepare("INSERT INTO memberships (user_id, group_id, role, created_at) VALUES (?, ?, ?, ?)").run(
+    userId,
+    groupId,
+    role,
+    new Date().toISOString(),
   );
 }
 
-export function memberByToken(groupId: number, token: string | undefined): Member | undefined {
-  if (!token) return undefined;
-  return db.prepare("SELECT * FROM members WHERE group_id = ? AND token = ?").get(groupId, token) as
-    | Member
-    | undefined;
+export function removeMembership(userId: number, groupId: number): void {
+  db.prepare("DELETE FROM memberships WHERE user_id = ? AND group_id = ?").run(userId, groupId);
+}
+
+export interface MembershipWithGroup {
+  group: Group;
+  role: Role;
+}
+
+/** Every group a user belongs to, with their role in each --- the
+ * dashboard's data (src/pages.ts: mePage). */
+export function membershipsForUser(userId: number): MembershipWithGroup[] {
+  const rows = db
+    .prepare(
+      `SELECT groups.*, memberships.role AS membership_role FROM memberships
+       JOIN groups ON groups.id = memberships.group_id
+       WHERE memberships.user_id = ?
+       ORDER BY memberships.created_at ASC`,
+    )
+    .all(userId) as unknown as Array<Group & { membership_role: Role }>;
+  return rows.map(({ membership_role, ...group }) => ({ group: group as Group, role: membership_role }));
+}
+
+/** Every member of a group (as their user row) plus their role, oldest
+ * membership first --- the pool results can be logged against, and what the
+ * group page's member list renders. */
+export function membersForGroup(groupId: number): MemberWithRole[] {
+  return db
+    .prepare(
+      `SELECT users.*, memberships.role AS role FROM memberships
+       JOIN users ON users.id = memberships.user_id
+       WHERE memberships.group_id = ?
+       ORDER BY memberships.created_at ASC`,
+    )
+    .all(groupId) as unknown as MemberWithRole[];
+}
+
+export function memberInGroup(groupId: number, userId: number): MemberWithRole | undefined {
+  return db
+    .prepare(
+      `SELECT users.*, memberships.role AS role FROM memberships
+       JOIN users ON users.id = memberships.user_id
+       WHERE memberships.group_id = ? AND users.id = ?`,
+    )
+    .get(groupId, userId) as MemberWithRole | undefined;
 }

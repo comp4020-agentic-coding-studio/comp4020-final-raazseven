@@ -15,11 +15,14 @@ import {
   createGroup,
   db,
   groupMatchesForGroup,
+  joinGroup,
   membersForGroup,
-  registerMember,
+  NameTakenError,
+  registerUser,
   setGroupTags,
   type Group,
-  type Member,
+  type MemberWithRole,
+  type User,
 } from "../src/db.ts";
 
 interface SeedGroup {
@@ -111,10 +114,25 @@ function findGroupByName(name: string): Group | undefined {
   return db.prepare("SELECT * FROM groups WHERE name = ?").get(name) as Group | undefined;
 }
 
-function findMember(members: Member[], name: string): Member {
+function findMember(members: MemberWithRole[], name: string): MemberWithRole {
   const member = members.find((m) => m.name === name);
   if (!member) throw new Error(`seed data error: no member named "${name}"`);
   return member;
+}
+
+/** Names are global now (src/db.ts) --- a seed re-run, or two seeded groups
+ * sharing a member's name, could collide with a user created earlier. Reuse
+ * that account rather than failing, same as a real sign-up would be told to
+ * "log in instead." */
+function findOrRegisterUser(name: string, password: string): User {
+  try {
+    return registerUser(name, password);
+  } catch (err) {
+    if (err instanceof NameTakenError) {
+      return db.prepare("SELECT * FROM users WHERE name = ? COLLATE NOCASE").get(name) as unknown as User;
+    }
+    throw err;
+  }
 }
 
 const createdGroups = new Map<string, Group>();
@@ -136,10 +154,11 @@ for (const spec of SEED_GROUPS) {
   createdGroups.set(spec.name, group);
   console.log(`+ "${spec.name}" --- code ${group.code}`);
 
-  for (const m of spec.members) {
-    registerMember(group.id, m.name, m.password);
-    console.log(`  - ${m.name} / ${m.password}`);
-  }
+  spec.members.forEach((m, index) => {
+    const user = findOrRegisterUser(m.name, m.password);
+    joinGroup(user.id, group.id, index === 0 ? "owner" : "member");
+    console.log(`  - ${m.name} / ${m.password}${index === 0 ? " (owner)" : ""}`);
+  });
 
   const members = membersForGroup(group.id);
   for (const r of spec.results) {

@@ -375,6 +375,68 @@ export const baseStyles = `
     margin: 0.5rem 0;
   }
 
+  .user-chip {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    text-decoration: none;
+    color: var(--text);
+    font-weight: 600;
+    font-size: 0.9rem;
+    padding: 0.3rem 0.6rem 0.3rem 0.3rem;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+  }
+
+  .user-chip:hover {
+    border-color: var(--accent);
+  }
+
+  .member-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+  }
+
+  .member-chip {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 0.25rem 0.6rem 0.25rem 0.25rem;
+    font-size: 0.85rem;
+  }
+
+  .role-badge {
+    font-size: 0.65rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: var(--accent-amber);
+    background: color-mix(in srgb, var(--accent-amber) 18%, transparent);
+    padding: 0.1rem 0.45rem;
+    border-radius: 999px;
+  }
+
+  .remove-btn {
+    background: none;
+    border: none;
+    color: var(--muted);
+    font-size: 0.75rem;
+    font-weight: 600;
+    padding: 0;
+    text-decoration: underline;
+    cursor: pointer;
+  }
+
+  .remove-btn:hover {
+    color: #b91c1c;
+    background: none;
+  }
+
   .tag-picker {
     border: none;
     padding: 0;
@@ -946,16 +1008,29 @@ export function iconChip(content: IconName | "vs", color: "indigo" | "amber" | "
   return `<span class="icon-chip c-${color}">${inner}</span>`;
 }
 
-/** The site header. `showNav` adds Log in / Sign up links --- only the home
- * page needs them; a group page already has its own sign-in UI inline, and a
- * second, unrelated pair of auth buttons there would just be confusing. */
-export function siteHeader(showNav = false): string {
-  const nav = showNav
+function headerEscapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+/** The site header, on every page. Shown here is the whole fix for "it
+ * doesn't show I'm logged in": a user's identity used to only ever appear
+ * inside one card on one group's page; it's in the shared header now, so it
+ * follows you to the home page, every group, and /me alike. */
+export function siteHeader(user?: { id: number; name: string }): string {
+  const nav = user
     ? `<nav class="site-nav" aria-label="Account">
-        <a class="btn-ghost" href="#login">Log in</a>
-        <a class="btn-solid" href="/new">Sign up</a>
+        <a class="user-chip" href="/me">
+          <img class="avatar avatar-sm" src="/users/${user.id}/avatar" alt="${headerEscapeHtml(user.name)}" width="28" height="28" />
+          <span>${headerEscapeHtml(user.name)}</span>
+        </a>
+        <form method="post" action="/logout" style="margin:0">
+          <button type="submit" class="btn-ghost">Log out</button>
+        </form>
       </nav>`
-    : "";
+    : `<nav class="site-nav" aria-label="Account">
+        <a class="btn-ghost" href="/login">Log in</a>
+        <a class="btn-solid" href="/signup">Sign up</a>
+      </nav>`;
   return `<header class="site">
     <div class="brand-row">
       <div class="brand">

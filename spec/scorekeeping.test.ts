@@ -1,10 +1,13 @@
 import { expect, it } from "vitest";
-import { baseUrl, createGroup, memberId, register, sessionCookie } from "./support.ts";
+import { baseUrl, createGroup, login, memberId, register, signup, uniqueName } from "./support.ts";
 
 // Crit 8's bar: a stranger can do the core thing (create an account, log a
 // 1v1 result) and find their trace still there when they come back. This
 // checks that round trip over HTTP against the running app, so it holds for
-// whatever stack builds it.
+// whatever stack builds it. Global-account specifics (a name being taken,
+// wrong-password rejection, direct login) moved to spec/accounts.test.ts
+// once accounts stopped being scoped to one group --- this file stays
+// focused on what it's named for: logging and keeping a result.
 
 it("a registered member's logged result is still there on the next visit", async () => {
   const groupPath = await createGroup(`spec-test-group-${Date.now()}`);
@@ -32,7 +35,7 @@ it("a registered member's logged result is still there on the next visit", async
   expect(html).toContain("Sam");
 });
 
-it("logging a result requires signing in first", async () => {
+it("logging a result requires being a member of the group, not just signed in", async () => {
   const groupPath = await createGroup(`spec-test-group-${Date.now()}-nonmember`);
   const cookie = await register(groupPath, "Alex", "a-password-123");
   const alexId = await memberId(groupPath, cookie, "Alex");
@@ -48,11 +51,30 @@ it("logging a result requires signing in first", async () => {
   });
   expect(logRes.status).toBe(200);
   const html = await logRes.text();
-  expect(html, "signed-out visitors should be asked to sign in").toContain("Sign in to log results");
+  expect(html, "signed-out visitors should be prompted to log in or sign up").toContain(
+    "Log in or sign up to join",
+  );
 
   const after = await fetch(new URL(groupPath, baseUrl));
   const afterHtml = await after.text();
   expect(afterHtml).not.toContain("FIFA");
+});
+
+it("a signed-in user who hasn't joined this group can't log a result either", async () => {
+  const groupPath = await createGroup(`spec-test-group-${Date.now()}-outsider`);
+  const cookie = await register(groupPath, "In-group", "a-real-password");
+  const inGroupId = await memberId(groupPath, cookie, "In-group");
+  const outsiderCookie = await signup(uniqueName("outsider"), "a-real-password");
+
+  const logRes = await fetch(new URL(`${groupPath}/results`, baseUrl), {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded", cookie: outsiderCookie },
+    body: new URLSearchParams({ game: "FIFA", winner: inGroupId, loser: inGroupId }),
+  });
+  expect(logRes.status).toBe(200);
+  expect(await logRes.text()).toContain("Join this group");
+
+  expect(await (await fetch(new URL(groupPath, baseUrl))).text()).not.toContain("FIFA");
 });
 
 it("a result can't be logged against someone who isn't a member of the group", async () => {
@@ -90,53 +112,27 @@ it("winner and loser can't be the same player", async () => {
   expect(await logRes.text()).toContain("can't be the same player");
 });
 
-it("the same name can't be registered twice in a group", async () => {
-  const groupPath = await createGroup(`spec-test-group-${Date.now()}-dupe-name`);
-  await register(groupPath, "Morgan", "a-real-password");
-
-  const res = await fetch(new URL(`${groupPath}/register`, baseUrl), {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ name: "Morgan", password: "a-different-password" }),
-    redirect: "manual",
-  });
-  expect(res.status).toBe(200); // re-rendered with an error, not redirected
-  expect(await res.text()).toContain("already registered");
-
-  // and the original account's password still works --- the duplicate
-  // attempt didn't overwrite it
-  const loginRes = await fetch(new URL(`${groupPath}/login`, baseUrl), {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ name: "Morgan", password: "a-real-password" }),
-    redirect: "manual",
-  });
-  expect(loginRes.status).toBe(303);
-});
-
-it("logging in with the wrong password is rejected", async () => {
-  const groupPath = await createGroup(`spec-test-group-${Date.now()}-wrong-password`);
-  await register(groupPath, "Sasha", "the-real-password");
-
-  const res = await fetch(new URL(`${groupPath}/login`, baseUrl), {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ name: "Sasha", password: "a-guess" }),
-    redirect: "manual",
-  });
-  expect(res.status).toBe(200); // re-rendered with an error, not redirected
-  expect(await res.text()).toContain("incorrect");
-});
-
-it("logging back in after logging out requires the password again", async () => {
+it("logging back in after logging out requires the password again, and the stale session can't log a result", async () => {
   const groupPath = await createGroup(`spec-test-group-${Date.now()}-logout`);
 
-  const oldCookie = await register(groupPath, "Sam", "correct-horse");
+  // Captured directly (not via register()) so the later re-login can use
+  // the exact, real, globally-unique name --- register() uniquifies "Sam"
+  // internally, and that suffixed name is what's actually registered.
+  const samName = uniqueName("Sam");
+  const oldCookie = await signup(samName, "correct-horse");
+  const joinRes = await fetch(new URL(`${groupPath}/join`, baseUrl), {
+    method: "POST",
+    headers: { cookie: oldCookie },
+    redirect: "manual",
+  });
+  expect(joinRes.status).toBe(303);
   const robinCookie = await register(groupPath, "Robin", "another-password");
-  const samId = await memberId(groupPath, robinCookie, "Sam");
+  const samId = await memberId(groupPath, robinCookie, samName);
   const robinId = await memberId(groupPath, robinCookie, "Robin");
 
-  const logoutRes = await fetch(new URL(`${groupPath}/logout`, baseUrl), {
+  // Logout is global now (decisions/0002-global-accounts.md) --- no group
+  // code involved.
+  const logoutRes = await fetch(new URL("/logout", baseUrl), {
     method: "POST",
     headers: { cookie: oldCookie },
     redirect: "manual",
@@ -152,17 +148,10 @@ it("logging back in after logging out requires the password again", async () => 
   });
   expect(staleAttempt.status).toBe(200); // not redirected: the result wasn't recorded
   const staleHtml = await staleAttempt.text();
-  expect(staleHtml, "a logged-out session token must not still work").toContain("Sign in to log results");
+  expect(staleHtml, "a logged-out session token must not still work").toContain("Log in or sign up to join");
 
   // Logging back in with the password works and issues a usable session.
-  const loginRes = await fetch(new URL(`${groupPath}/login`, baseUrl), {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ name: "Sam", password: "correct-horse" }),
-    redirect: "manual",
-  });
-  expect(loginRes.status).toBe(303);
-  const newCookie = sessionCookie(loginRes);
+  const newCookie = await login(samName, "correct-horse");
 
   const logRes = await fetch(new URL(`${groupPath}/results`, baseUrl), {
     method: "POST",

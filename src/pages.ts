@@ -1,5 +1,6 @@
-import type { Group, GroupMatch, Member, Result, Tag } from "./db.ts";
-import { curatedTagsByCategory, getGroupById } from "./db.ts";
+import type { Group, GroupMatch, MemberWithRole, MembershipWithGroup, Result, Role, Tag, User } from "./db.ts";
+import { getGroupById } from "./db.ts";
+import { curatedTagsByCategory } from "./db.ts";
 import { baseStyles, iconChip, logoMark, siteHeader } from "./styles.ts";
 
 function escapeHtml(s: string): string {
@@ -14,8 +15,10 @@ function escapeHtml(s: string): string {
 // tab carries it too --- one SVG, two uses, instead of a separate image asset.
 const faviconHref = `data:image/svg+xml,${encodeURIComponent(logoMark(36))}`;
 
-/** `showNav` puts Log in / Sign up links in the header --- see siteHeader(). */
-const layout = (title: string, body: string, script?: string, showNav = false) => `<!doctype html>
+/** Every page shows who's signed in (or that nobody is) in the shared
+ * header --- that's the actual fix for "it doesn't show I'm logged in": it
+ * has to live here, not inside one card on one page. */
+const layout = (title: string, body: string, script: string | undefined, user: User | undefined) => `<!doctype html>
 <html lang="en-AU">
   <head>
     <meta charset="utf-8" />
@@ -28,7 +31,7 @@ const layout = (title: string, body: string, script?: string, showNav = false) =
     <style>${baseStyles}</style>
   </head>
   <body>
-    ${siteHeader(showNav)}
+    ${siteHeader(user ? { id: user.id, name: user.name } : undefined)}
     <main>
       ${body}
     </main>
@@ -37,8 +40,8 @@ const layout = (title: string, body: string, script?: string, showNav = false) =
   </body>
 </html>`;
 
-function memberAvatarUrl(code: string, memberId: number): string {
-  return `/g/${encodeURIComponent(code)}/members/${memberId}/avatar`;
+function userAvatarUrl(userId: number): string {
+  return `/users/${userId}/avatar`;
 }
 
 function groupAvatarUrl(code: string): string {
@@ -71,13 +74,6 @@ const avatarChoiceScript = `
   sync();
 })();
 `;
-
-export interface NewGroupPageOptions {
-  createError?: string;
-  /** What to put back in the form after a failed submit --- everything except
-   * the file, which HTML has no way to hand back to a form. */
-  prefill?: { name?: string; bio?: string; tagIds?: number[]; customTags?: string };
-}
 
 const CATEGORY_LABELS: Record<string, string> = {
   "video-game": "Video games",
@@ -112,7 +108,20 @@ function tagPicker(selectedIds: number[], customTags: string): string {
     <input id="custom-tags" name="customTags" placeholder="e.g. Ping pong, Bananagrams" value="${escapeHtml(customTags)}" />`;
 }
 
-export function homePage(): string {
+/** Splits a group's current tags back into curated ids + custom names, the
+ * shape the edit-profile form needs to prefill itself with --- otherwise
+ * re-saving the form without retyping a custom tag would silently drop it
+ * (setGroupTags replaces the full set, it doesn't merge). */
+function splitGroupTags(tags: Tag[]): { tagIds: number[]; customTags: string } {
+  const tagIds = tags.filter((t) => t.category !== "custom").map((t) => t.id);
+  const customTags = tags
+    .filter((t) => t.category === "custom")
+    .map((t) => t.name)
+    .join(", ");
+  return { tagIds, customTags };
+}
+
+export function homePage(user?: User): string {
   return layout(
     "Score's in Check",
     `<section class="hero">
@@ -122,12 +131,16 @@ export function homePage(): string {
           <h1 class="hero-animate">Stop arguing about who's actually winning.</h1>
           <p class="lede hero-animate">
             Score's in Check is the record your friend group actually keeps up
-            to date: real accounts, every result logged as it happens, visible
-            to everyone the second it's in.
+            to date: one account, every group you're in, every result logged
+            as it happens and visible to everyone the second it's in.
           </p>
           <div class="hero-actions hero-animate">
-            <a class="btn-solid" href="/new">Sign up &mdash; start your group</a>
-            <a class="btn-ghost" href="#login">Log in with a code</a>
+            ${
+              user
+                ? `<a class="btn-solid" href="/me">Go to your groups</a>`
+                : `<a class="btn-solid" href="/signup">Sign up</a>
+                   <a class="btn-ghost" href="#login">Log in with a code</a>`
+            }
           </div>
         </div>
         <div class="hero-visual hero-animate">
@@ -162,13 +175,13 @@ export function homePage(): string {
     <div class="steps">
       <div class="step">
         ${iconChip("signin", "indigo")}
-        <h3>Start a group, or join one</h3>
-        <p>Create your own group and get a share code, or enter a friend's code to land on theirs.</p>
+        <h3>One account, every group</h3>
+        <p>Sign up once. Create a group or join one with a code --- both from your dashboard, not a new account each time.</p>
       </div>
       <div class="step">
         ${iconChip("account", "teal")}
-        <h3>Sign up, then log results</h3>
-        <p>Everyone gets their own name and password inside the group --- no logging a result as someone else.</p>
+        <h3>Owners and members</h3>
+        <p>Whoever starts a group is its owner --- they can edit its profile and manage who's in it. Everyone can log results.</p>
       </div>
       <div class="step">
         ${iconChip("bolt", "amber")}
@@ -178,14 +191,14 @@ export function homePage(): string {
     </div>
 
     <div class="section-heading">
-      <h2>Built for one friend group, not a leaderboard for strangers</h2>
+      <h2>Built for friend groups, not a leaderboard for strangers</h2>
       <p>Everything here is in the app today, not a roadmap.</p>
     </div>
     <div class="features">
       <div class="feature">
         ${iconChip("account", "indigo")}
         <h3>Real members, not typed names</h3>
-        <p>A result can only be logged against someone who actually signed up to the group.</p>
+        <p>A result can only be logged against someone who's actually a member of the group.</p>
       </div>
       <div class="feature">
         ${iconChip("bolt", "amber")}
@@ -200,48 +213,65 @@ export function homePage(): string {
       <div class="feature">
         ${iconChip("camera", "teal")}
         <h3>A face, not just a name</h3>
-        <p>Every member and group gets a profile photo &mdash; generated instantly, or upload your own.</p>
+        <p>Your profile photo follows you across every group you're in --- generated instantly, or upload your own.</p>
       </div>
     </div>
 
     <div class="section-heading" id="get-started">
       <h2>Get started</h2>
-      <p>Two ways in, depending on whether your group exists yet.</p>
+      <p>${user ? "You're signed in --- jump straight to your groups." : "One account, then create or join a group from your dashboard."}</p>
     </div>
     <div class="cards-row">
       <div class="card action-section" id="signup">
-        <h2 style="margin-top:0">Sign up &mdash; start a new group</h2>
-        <p class="lede" style="font-size:0.85rem">Give it a name, a bio, some game tags and a photo, then create your own account inside it.</p>
-        <a class="btn-solid" href="/new">Start a group</a>
+        <h2 style="margin-top:0">${user ? "Your dashboard" : "Sign up"}</h2>
+        <p class="lede" style="font-size:0.85rem">${
+          user
+            ? "Every group you're in, in one place."
+            : "Create your account, then start a group (you'll be its owner) or join one with a code."
+        }</p>
+        <a class="btn-solid" href="${user ? "/me" : "/signup"}">${user ? "Go to my groups" : "Create account"}</a>
       </div>
       <div class="card action-section" id="login">
-        <h2 style="margin-top:0">Log in &mdash; have a code?</h2>
-        <p class="lede" style="font-size:0.85rem">Enter your group's code, then log in (or sign up) once you're there.</p>
-        <form method="get" action="/g">
-          <label for="code">Group code</label>
-          <input id="code" name="code" required placeholder="e.g. ABC123" style="text-transform: uppercase" />
-          <button type="submit">Go to group</button>
-        </form>
+        <h2 style="margin-top:0">${user ? "Join another group" : "Already have an account?"}</h2>
+        <p class="lede" style="font-size:0.85rem">${
+          user ? "Have a group's code? Jump straight to it." : "Log in, then find or start a group from your dashboard."
+        }</p>
+        ${
+          user
+            ? `<form method="get" action="/g">
+                <label for="code">Group code</label>
+                <input id="code" name="code" required placeholder="e.g. ABC123" style="text-transform: uppercase" />
+                <button type="submit">Go to group</button>
+              </form>`
+            : `<a class="btn-ghost" href="/login">Log in</a>`
+        }
       </div>
     </div>`,
     undefined,
-    true,
+    user,
   );
 }
 
-/** The dedicated "start a group" page --- this used to be a card on the home
- * page, but a name + bio + tag picker + photo choice is a real form, not
- * something that belongs squeezed into half a two-column row next to a
- * one-field "log in" card (the two ended up wildly mismatched in height).
- * Landing pages sell the idea; a form this size earns its own page. */
-export function newGroupPage(opts: NewGroupPageOptions = {}): string {
+/** The dedicated "start a group" page --- a name + bio + tag picker + photo
+ * choice is a real form, not something that belongs squeezed into half a
+ * two-column row next to a one-field "log in" card. Requires being signed
+ * in already (src/server.ts redirects to /signup?next=/new otherwise) ---
+ * the creator becomes the group's owner the moment it exists. */
+export interface NewGroupPageOptions {
+  createError?: string;
+  /** What to put back in the form after a failed submit --- everything except
+   * the file, which HTML has no way to hand back to a form. */
+  prefill?: { name?: string; bio?: string; tagIds?: number[]; customTags?: string };
+}
+
+export function newGroupPage(user: User, opts: NewGroupPageOptions = {}): string {
   const prefill = opts.prefill ?? {};
   return layout(
     "Start a group — Score's in Check",
     `<div class="new-group-page">
-      <a class="back-link" href="/">&larr; Back to home</a>
+      <a class="back-link" href="/me">&larr; Back to your groups</a>
       <h1>Start a new group</h1>
-      <p class="lede">A name, a bio, and at least one game tag are required --- your group's profile, before anyone's logged a single result. You'll create your own personal account on the next page.</p>
+      <p class="lede">A name, a bio, and at least one game tag are required --- your group's profile, before anyone's logged a single result. You'll be its owner.</p>
       ${opts.createError ? `<p class="error-text">${escapeHtml(opts.createError)}</p>` : ""}
       <form class="card" method="post" action="/groups" enctype="multipart/form-data">
         <label for="name">Group name</label>
@@ -261,7 +291,121 @@ export function newGroupPage(opts: NewGroupPageOptions = {}): string {
       </form>
     </div>`,
     avatarChoiceScript,
-    false,
+    user,
+  );
+}
+
+export interface AuthPageOptions {
+  createError?: string;
+  next?: string;
+  prefill?: { name?: string };
+}
+
+export function signupPage(opts: AuthPageOptions = {}): string {
+  const next = opts.next ?? "/me";
+  return layout(
+    "Sign up — Score's in Check",
+    `<div class="new-group-page">
+      <a class="back-link" href="/">&larr; Back to home</a>
+      <h1>Create your account</h1>
+      <p class="lede">One account works everywhere --- every group you create or join from here on uses this login.</p>
+      ${opts.createError ? `<p class="error-text">${escapeHtml(opts.createError)}</p>` : ""}
+      <form class="card" method="post" action="/signup">
+        <input type="hidden" name="next" value="${escapeHtml(next)}" />
+        <label for="name">Name</label>
+        <input id="name" name="name" required placeholder="e.g. Raj" value="${escapeHtml(opts.prefill?.name ?? "")}" />
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" required minlength="6" />
+        <button type="submit">Create account</button>
+      </form>
+      <p class="lede" style="font-size:0.85rem">Already have an account? <a href="/login?next=${encodeURIComponent(next)}">Log in</a></p>
+    </div>`,
+    undefined,
+    undefined,
+  );
+}
+
+export function loginPage(opts: AuthPageOptions = {}): string {
+  const next = opts.next ?? "/me";
+  return layout(
+    "Log in — Score's in Check",
+    `<div class="new-group-page">
+      <a class="back-link" href="/">&larr; Back to home</a>
+      <h1>Log in</h1>
+      <p class="lede">The same account you use everywhere on Score's in Check.</p>
+      ${opts.createError ? `<p class="error-text">${escapeHtml(opts.createError)}</p>` : ""}
+      <form class="card" method="post" action="/login">
+        <input type="hidden" name="next" value="${escapeHtml(next)}" />
+        <label for="name">Name</label>
+        <input id="name" name="name" required placeholder="e.g. Raj" value="${escapeHtml(opts.prefill?.name ?? "")}" />
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" required />
+        <button type="submit">Log in</button>
+      </form>
+      <p class="lede" style="font-size:0.85rem">New here? <a href="/signup?next=${encodeURIComponent(next)}">Create an account</a></p>
+    </div>`,
+    undefined,
+    undefined,
+  );
+}
+
+/** The dashboard: who you are, every group you're in and your role, and a
+ * way to create or join another --- the thing that didn't exist before
+ * (decisions/0002-global-accounts.md), since there was no account to have
+ * a dashboard for. */
+export function mePage(user: User, memberships: MembershipWithGroup[], avatarError?: string): string {
+  const groupRows = memberships
+    .map(
+      ({ group, role }) => `<li class="result-row">
+        <div class="matchup">
+          ${avatarImg(groupAvatarUrl(group.code), group.name, "sm")}
+          <a href="/g/${encodeURIComponent(group.code)}"><strong>${escapeHtml(group.name)}</strong></a>
+          ${role === "owner" ? `<span class="role-badge">Owner</span>` : ""}
+        </div>
+      </li>`,
+    )
+    .join("");
+
+  return layout(
+    "My groups — Score's in Check",
+    `<div class="profile-header">
+      ${avatarImg(userAvatarUrl(user.id), user.name, "lg")}
+      <div class="profile-header-text">
+        <h1 style="margin-bottom:0.1rem">${escapeHtml(user.name)}</h1>
+        <p class="lede" style="margin-top:0">Your account --- works the same in every group below.</p>
+      </div>
+    </div>
+    <form class="avatar-upload" method="post" action="/me/avatar" enctype="multipart/form-data">
+      <input type="file" name="avatar" accept="image/png,image/jpeg,image/webp" required />
+      <button type="submit">Update my photo</button>
+    </form>
+    ${avatarError ? `<p class="error-text">${escapeHtml(avatarError)}</p>` : ""}
+
+    <div class="cards-row">
+      <div class="card">
+        <h2 style="margin-top:0">Start a group</h2>
+        <p class="lede" style="font-size:0.85rem">You'll be its owner.</p>
+        <a class="btn-solid" href="/new">Start a group</a>
+      </div>
+      <div class="card">
+        <h2 style="margin-top:0">Join a group</h2>
+        <p class="lede" style="font-size:0.85rem">Have a code? Enter it, then join from the group's page.</p>
+        <form method="get" action="/g">
+          <label for="code">Group code</label>
+          <input id="code" name="code" required placeholder="e.g. ABC123" style="text-transform: uppercase" />
+          <button type="submit">Go to group</button>
+        </form>
+      </div>
+    </div>
+
+    <h2>Your groups</h2>
+    ${
+      memberships.length === 0
+        ? `<p class="empty">You're not in a group yet --- start one or join one above.</p>`
+        : `<ul class="results-list">${groupRows}</ul>`
+    }`,
+    undefined,
+    user,
   );
 }
 
@@ -272,9 +416,7 @@ export function resultsListFragment(group: Group, results: Result[]): string {
   }
   const rows = results
     .map((r) => {
-      const winnerAvatar = r.winner_member_id
-        ? avatarImg(memberAvatarUrl(group.code, r.winner_member_id), r.winner)
-        : "";
+      const winnerAvatar = r.winner_user_id ? avatarImg(userAvatarUrl(r.winner_user_id), r.winner) : "";
       return `<li class="result-row">
         <div class="matchup">
           <span class="game">${escapeHtml(r.game)}</span>
@@ -319,7 +461,7 @@ export function groupMatchesFragment(group: Group, matches: GroupMatch[]): strin
 }
 
 /** The inner `<option>`s of the winner/loser selects --- also what a live `member` event re-sends. */
-export function memberOptionsFragment(members: Member[]): string {
+export function memberOptionsFragment(members: MemberWithRole[]): string {
   const options = members.map((m) => `<option value="${m.id}">${escapeHtml(m.name)}</option>`).join("\n");
   return `<option value="" disabled selected>choose a player</option>${options}`;
 }
@@ -351,35 +493,64 @@ const liveScript = (code: string) => `
 export function groupPage(
   group: Group,
   results: Result[],
-  members: Member[],
+  members: MemberWithRole[],
   groupMatches: GroupMatch[],
   groupTags: Tag[],
-  member: Member | undefined,
-  authError?: string,
+  user: User | undefined,
+  role: Role | undefined,
   resultError?: string,
   matchError?: string,
   avatarError?: string,
+  profileError?: string,
 ): string {
   const code = escapeHtml(group.code);
   const memberOptions = memberOptionsFragment(members);
+  const isMember = role !== undefined;
+  const isOwner = role === "owner";
+  const nextParam = encodeURIComponent(`/g/${group.code}`);
 
-  const actionCard = member
+  const memberList = `<div class="member-list">
+    ${members
+      .map((m) => {
+        const canRemove = isOwner && user && m.id !== user.id && m.role !== "owner";
+        return `<div class="member-chip">
+          ${avatarImg(userAvatarUrl(m.id), m.name, "sm")}
+          <span>${escapeHtml(m.name)}</span>
+          ${m.role === "owner" ? `<span class="role-badge">Owner</span>` : ""}
+          ${
+            canRemove
+              ? `<form method="post" action="/g/${code}/members/${m.id}/remove" style="display:inline; margin:0">
+                  <button type="submit" class="remove-btn">Remove</button>
+                </form>`
+              : ""
+          }
+        </div>`;
+      })
+      .join("")}
+  </div>`;
+
+  const joinOrAuthCard = !user
     ? `<div class="card">
-        <div style="display:flex; justify-content:space-between; align-items:baseline; gap:0.5rem">
-          <h2 style="margin-top:0">Log a result</h2>
-          <form method="post" action="/g/${code}/logout" style="margin:0">
-            <button type="submit" style="background:transparent; color:var(--muted); padding:0.25rem 0.5rem; font-weight:500">Log out</button>
+        <h2 style="margin-top:0">Log in or sign up to join</h2>
+        <p class="lede" style="font-size:0.85rem">You'll need an account to log a result in this group.</p>
+        <div class="hero-actions" style="justify-content:flex-start">
+          <a class="btn-solid" href="/signup?next=${nextParam}">Sign up</a>
+          <a class="btn-ghost" href="/login?next=${nextParam}">Log in</a>
+        </div>
+      </div>`
+    : !isMember
+      ? `<div class="card">
+          <h2 style="margin-top:0">Join this group</h2>
+          <p class="lede" style="font-size:0.85rem">Signed in as <strong>${escapeHtml(user.name)}</strong>.</p>
+          <form method="post" action="/g/${code}/join">
+            <button type="submit">Join ${escapeHtml(group.name)}</button>
           </form>
-        </div>
-        <div class="profile-header">
-          ${avatarImg(memberAvatarUrl(group.code, member.id), member.name, "md")}
-          <p class="lede" style="margin:0">Signed in as <strong>${escapeHtml(member.name)}</strong></p>
-        </div>
-        <form class="avatar-upload" method="post" action="/g/${code}/members/${member.id}/avatar" enctype="multipart/form-data">
-          <input type="file" name="avatar" accept="image/png,image/jpeg,image/webp" required />
-          <button type="submit">Update my photo</button>
-        </form>
-        ${avatarError ? `<p class="error-text">${escapeHtml(avatarError)}</p>` : ""}
+        </div>`
+      : "";
+
+  const logResultCard = isMember
+    ? `<div class="card">
+        <h2 style="margin-top:0">Log a result</h2>
         ${resultError ? `<p class="error-text">${escapeHtml(resultError)}</p>` : ""}
         <form method="post" action="/g/${code}/results">
           <label for="game">Game</label>
@@ -391,35 +562,9 @@ export function groupPage(
           <button type="submit">Log result</button>
         </form>
       </div>`
-    : `<div class="card">
-        <h2 style="margin-top:0">Sign in to log results</h2>
-        ${authError ? `<p class="error-text">${escapeHtml(authError)}</p>` : ""}
-        <div class="cards-row">
-          <div>
-            <h3 style="font-size:0.95rem">Log in</h3>
-            <form method="post" action="/g/${code}/login">
-              <label for="login-name">Name</label>
-              <input id="login-name" name="name" required placeholder="e.g. Raj" />
-              <label for="login-password">Password</label>
-              <input id="login-password" name="password" type="password" required />
-              <button type="submit">Log in</button>
-            </form>
-          </div>
-          <div>
-            <h3 style="font-size:0.95rem">Create account</h3>
-            <form method="post" action="/g/${code}/register">
-              <label for="register-name">Name</label>
-              <input id="register-name" name="name" required placeholder="e.g. Raj" />
-              <label for="register-password">Password</label>
-              <input id="register-password" name="password" type="password" required minlength="6" />
-              <button type="submit">Create account</button>
-            </form>
-            <p class="lede" style="margin-bottom:0; font-size:0.8rem">You'll get a generated avatar right away — upload a photo any time after signing in.</p>
-          </div>
-        </div>
-      </div>`;
+    : "";
 
-  const groupMatchCard = member
+  const groupMatchCard = isMember
     ? `<div class="card">
         <h2 style="margin-top:0">Log a match against another group</h2>
         ${matchError ? `<p class="error-text">${escapeHtml(matchError)}</p>` : ""}
@@ -443,6 +588,26 @@ export function groupPage(
       </div>`
     : "";
 
+  const { tagIds: currentTagIds, customTags: currentCustomTags } = splitGroupTags(groupTags);
+  const editProfileCard = isOwner
+    ? `<div class="card">
+        <h2 style="margin-top:0">Edit group profile</h2>
+        ${profileError ? `<p class="error-text">${escapeHtml(profileError)}</p>` : ""}
+        <form method="post" action="/g/${code}/profile">
+          <label for="edit-bio">Bio</label>
+          <textarea id="edit-bio" name="bio" required rows="2">${escapeHtml(group.bio ?? "")}</textarea>
+          <label>Game tags</label>
+          ${tagPicker(currentTagIds, currentCustomTags)}
+          <button type="submit">Save changes</button>
+        </form>
+        <form class="avatar-upload" method="post" action="/g/${code}/avatar" enctype="multipart/form-data">
+          <input type="file" name="avatar" accept="image/png,image/jpeg,image/webp" required />
+          <button type="submit">Update group photo</button>
+        </form>
+        ${avatarError ? `<p class="error-text">${escapeHtml(avatarError)}</p>` : ""}
+      </div>`
+    : "";
+
   return layout(
     group.name,
     `<div class="profile-header">
@@ -458,18 +623,14 @@ export function groupPage(
         ? `<div class="group-tags">${groupTags.map((t) => `<span class="tag-pill">${escapeHtml(t.name)}</span>`).join("")}</div>`
         : ""
     }
-    ${
-      member
-        ? `<form class="avatar-upload" method="post" action="/g/${code}/avatar" enctype="multipart/form-data">
-            <input type="file" name="avatar" accept="image/png,image/jpeg,image/webp" required />
-            <button type="submit">Update group photo</button>
-          </form>`
-        : ""
-    }
+    <h2>Members</h2>
+    ${memberList}
     <div class="group-layout">
       <div class="group-layout-actions">
-        ${actionCard}
+        ${joinOrAuthCard}
+        ${logResultCard}
         ${groupMatchCard}
+        ${editProfileCard}
       </div>
       <div class="group-layout-feed">
         <h2 class="h2-live"><span class="live-dot"></span>Results</h2>
@@ -479,5 +640,6 @@ export function groupPage(
       </div>
     </div>`,
     liveScript(group.code),
+    user,
   );
 }

@@ -22,16 +22,16 @@ and wants the receipts instead of relying on memory and exaggeration.
 - **Niche by group, not by platform.** This isn't a FIFA app or a basketball
   app — a group makes its own space and logs whatever it plays there.
   Competition narrows naturally to the people who already hang out and play
-  together, so there's no need for matchmaking, skill brackets, or accounts
-  that work across groups.
+  together, so there's no need for matchmaking or skill brackets.
+- **One identity, many groups.** Signing up makes an account, not a
+  per-group login — the same name, password and photo follow you into every
+  group you join, and a group's creator gets a role (owner) a plain member
+  doesn't. An earlier draft of this app scoped accounts per group instead;
+  [`decisions/0002-global-accounts.md`](decisions/0002-global-accounts.md)
+  is the record of why that didn't hold up and what replaced it.
 
 ## What I chose not to build (yet)
 
-- **One identity across groups.** Signing up gets you a name, password and
-  profile photo inside one group, which is enough to stop a result being
-  logged as someone else. What's still deliberately missing is an account
-  that follows you between groups — the group's own code is still the only
-  way in, and that's on purpose, not a gap.
 - **Witness confirmation.** Right now any result can be logged on trust.
   Confirmation by a third friend is next week's build, once logging itself is
   solid.
