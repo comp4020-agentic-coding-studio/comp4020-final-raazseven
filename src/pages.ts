@@ -1,5 +1,5 @@
-import type { Group, GroupMatch, Member, Result } from "./db.ts";
-import { getGroupById, parseTags } from "./db.ts";
+import type { Group, GroupMatch, Member, Result, Tag } from "./db.ts";
+import { curatedTagsByCategory, getGroupById } from "./db.ts";
 import { baseStyles, iconChip, logoMark, siteHeader } from "./styles.ts";
 
 function escapeHtml(s: string): string {
@@ -76,7 +76,40 @@ export interface HomePageOptions {
   createError?: string;
   /** What to put back in the form after a failed submit --- everything except
    * the file, which HTML has no way to hand back to a form. */
-  prefill?: { name?: string; bio?: string; tags?: string };
+  prefill?: { name?: string; bio?: string; tagIds?: number[]; customTags?: string };
+}
+
+const CATEGORY_LABELS: Record<string, string> = {
+  "video-game": "Video games",
+  sport: "Real-world sports",
+  "board-game": "Board & card games",
+};
+
+/** A fieldset of checkbox "chips" per curated category, plus one free-text
+ * field for anything not on the list --- src/db.ts's findOrCreateTag() turns
+ * that text into a real tag row (reused by name if it already exists)
+ * rather than a second, parallel way of storing a tag. */
+function tagPicker(selectedIds: number[], customTags: string): string {
+  const byCategory = curatedTagsByCategory();
+  const fieldsets = Object.entries(CATEGORY_LABELS)
+    .map(([category, label]) => {
+      const options = (byCategory[category] ?? [])
+        .map(
+          (tag) => `<label class="tag-check">
+            <input type="checkbox" name="tagIds" value="${tag.id}" ${selectedIds.includes(tag.id) ? "checked" : ""} />
+            <span>${escapeHtml(tag.name)}</span>
+          </label>`,
+        )
+        .join("");
+      return `<fieldset class="tag-picker">
+        <legend>${escapeHtml(label)}</legend>
+        <div class="tag-options">${options}</div>
+      </fieldset>`;
+    })
+    .join("");
+  return `${fieldsets}
+    <label for="custom-tags">Not listed? Add your own</label>
+    <input id="custom-tags" name="customTags" placeholder="e.g. Ping pong, Bananagrams" value="${escapeHtml(customTags)}" />`;
 }
 
 export function homePage(opts: HomePageOptions = {}): string {
@@ -186,8 +219,9 @@ export function homePage(opts: HomePageOptions = {}): string {
           <input id="name" name="name" required placeholder="e.g. The Office FIFA League" value="${escapeHtml(prefill.name ?? "")}" />
           <label for="bio">Bio</label>
           <textarea id="bio" name="bio" required rows="2" placeholder="Who you are and why you keep score">${escapeHtml(prefill.bio ?? "")}</textarea>
-          <label for="tags">Game tags</label>
-          <input id="tags" name="tags" required placeholder="e.g. FIFA, Trivia, Board games" value="${escapeHtml(prefill.tags ?? "")}" />
+          <label>Game tags</label>
+          <p class="lede" style="font-size:0.8rem; margin:-0.25rem 0 0.5rem">Pick at least one, or add your own below.</p>
+          ${tagPicker(prefill.tagIds ?? [], prefill.customTags ?? "")}
           <label>Group photo</label>
           <div class="avatar-choice">
             <label class="radio-option"><input type="radio" name="avatarChoice" value="generate" checked /> Generate one for me</label>
@@ -300,6 +334,7 @@ export function groupPage(
   results: Result[],
   members: Member[],
   groupMatches: GroupMatch[],
+  groupTags: Tag[],
   member: Member | undefined,
   authError?: string,
   resultError?: string,
@@ -400,10 +435,8 @@ export function groupPage(
     </div>
     ${group.bio ? `<p class="group-bio">${escapeHtml(group.bio)}</p>` : ""}
     ${
-      parseTags(group.tags).length > 0
-        ? `<div class="group-tags">${parseTags(group.tags)
-            .map((t) => `<span class="tag-pill">${escapeHtml(t)}</span>`)
-            .join("")}</div>`
+      groupTags.length > 0
+        ? `<div class="group-tags">${groupTags.map((t) => `<span class="tag-pill">${escapeHtml(t.name)}</span>`).join("")}</div>`
         : ""
     }
     ${

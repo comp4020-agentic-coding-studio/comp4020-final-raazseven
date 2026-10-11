@@ -41,13 +41,15 @@ export function uploadForm(fields: Record<string, string>, fileField: string, fi
 
 /** Creates a group with a throwaway but valid profile --- name, bio, one
  * tag, and a photo are all mandatory now, so every test that just needs
- * *a* group still has to supply all four. */
+ * *a* group still has to supply all of them. The tag travels as a custom
+ * tag (plain text), not a curated tag id, so this doesn't need to know any
+ * curated tag's id. */
 export async function createGroup(
   name: string,
   overrides: { bio?: string; tags?: string } = {},
 ): Promise<string> {
   const form = uploadForm(
-    { name, bio: overrides.bio ?? "a spec-test group", tags: overrides.tags ?? "Testing" },
+    { name, bio: overrides.bio ?? "a spec-test group", customTags: overrides.tags ?? "Testing" },
     "avatar",
     "avatar.png",
     "image/png",

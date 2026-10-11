@@ -17,6 +17,7 @@ import {
   groupMatchesForGroup,
   membersForGroup,
   registerMember,
+  setGroupTags,
   type Group,
   type Member,
 } from "../src/db.ts";
@@ -126,7 +127,12 @@ for (const spec of SEED_GROUPS) {
     continue;
   }
 
-  const group = createGroup(spec.name, spec.bio, spec.tags);
+  const group = createGroup(spec.name, spec.bio);
+  // Passed as custom names rather than ids: findOrCreateTag() (inside
+  // setGroupTags) matches an existing curated tag by name case-insensitively
+  // (e.g. "FIFA" reuses the curated row), so this doesn't need to know which
+  // of spec.tags happen to already be in the curated list.
+  setGroupTags(group.id, [], spec.tags);
   createdGroups.set(spec.name, group);
   console.log(`+ "${spec.name}" --- code ${group.code}`);
 

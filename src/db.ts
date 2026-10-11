@@ -51,6 +51,23 @@ db.exec(`
     logged_by_member_id INTEGER NOT NULL REFERENCES members(id),
     created_at TEXT NOT NULL
   );
+
+  -- A real, shared vocabulary of tags --- "category" is one of video-game /
+  -- sport / board-game (the curated picker, seeded below) or custom (typed
+  -- by a group, reused by name if another group types the same one). Many
+  -- groups can share one tag and one group can have many, hence the join
+  -- table rather than a column on groups.
+  CREATE TABLE IF NOT EXISTS tags (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT UNIQUE NOT NULL,
+    category TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS group_tags (
+    group_id INTEGER NOT NULL REFERENCES groups(id),
+    tag_id INTEGER NOT NULL REFERENCES tags(id),
+    PRIMARY KEY (group_id, tag_id)
+  );
 `);
 
 // Migration: earlier deploys created `members` without a password (names
@@ -73,15 +90,93 @@ function addAvatarColumnsIfMissing(table: "members" | "groups"): void {
 addAvatarColumnsIfMissing("members");
 addAvatarColumnsIfMissing("groups");
 
-// Migration: a group's profile --- bio and tags --- is mandatory for a group
-// created from here on (src/server.ts enforces that), but nullable here so a
-// group created before this feature shipped still loads instead of 500ing.
+// Migration: a group's profile --- bio is mandatory for a group created from
+// here on (src/server.ts enforces that), but nullable here so a group
+// created before this feature shipped still loads instead of 500ing. `tags`
+// was briefly a comma-separated column on groups itself; superseded below by
+// the real tags/group_tags tables, but the column stays (unused from here
+// on) rather than risking a DROP COLUMN on somebody's live data.
 const groupColumns = db.prepare("PRAGMA table_info(groups)").all() as Array<{ name: string }>;
 if (!groupColumns.some((c) => c.name === "bio")) {
   db.exec("ALTER TABLE groups ADD COLUMN bio TEXT");
 }
 if (!groupColumns.some((c) => c.name === "tags")) {
-  db.exec("ALTER TABLE groups ADD COLUMN tags TEXT"); // comma-separated; parseTags()/joinTags() below
+  db.exec("ALTER TABLE groups ADD COLUMN tags TEXT");
+}
+
+// Seed the curated tag picker. INSERT OR IGNORE: safe to run on every start,
+// and a group that already picked one of these keeps pointing at the same
+// row either way.
+const CURATED_TAGS: Record<string, string[]> = {
+  "video-game": [
+    "FIFA",
+    "NBA 2K",
+    "Call of Duty",
+    "Fortnite",
+    "Minecraft",
+    "League of Legends",
+    "Valorant",
+    "Among Us",
+    "Mario Kart",
+    "Super Smash Bros",
+    "Overwatch",
+    "Rocket League",
+    "Apex Legends",
+    "Counter-Strike",
+    "Animal Crossing",
+  ],
+  sport: [
+    "Soccer",
+    "Basketball",
+    "Tennis",
+    "Table Tennis",
+    "Badminton",
+    "Volleyball",
+    "Pool",
+    "Darts",
+    "Bowling",
+    "Golf",
+    "Ultimate Frisbee",
+    "Running",
+  ],
+  "board-game": [
+    "Chess",
+    "Monopoly",
+    "Catan",
+    "Trivia",
+    "Poker",
+    "Uno",
+    "Scrabble",
+    "Risk",
+    "Codenames",
+    "Jenga",
+    "Dungeons & Dragons",
+    "Magic: The Gathering",
+  ],
+};
+const insertTag = db.prepare("INSERT OR IGNORE INTO tags (name, category) VALUES (?, ?)");
+for (const [category, names] of Object.entries(CURATED_TAGS)) {
+  for (const name of names) insertTag.run(name, category);
+}
+
+// Migration: move any pre-tags-table `groups.tags` CSV value into the real
+// tables, for a group created in the brief window where tags lived there.
+function legacyParseTags(tags: string | null): string[] {
+  if (!tags) return [];
+  return tags
+    .split(",")
+    .map((t) => t.trim())
+    .filter(Boolean);
+}
+const groupsWithLegacyTags = db
+  .prepare("SELECT id, tags FROM groups WHERE tags IS NOT NULL AND tags != ''")
+  .all() as Array<{ id: number; tags: string }>;
+for (const g of groupsWithLegacyTags) {
+  if (db.prepare("SELECT 1 FROM group_tags WHERE group_id = ?").get(g.id)) continue; // already migrated
+  for (const name of legacyParseTags(g.tags)) {
+    const tag = findOrCreateTag(name, "custom");
+    db.prepare("INSERT OR IGNORE INTO group_tags (group_id, tag_id) VALUES (?, ?)").run(g.id, tag.id);
+  }
 }
 
 // Migration: results predate member accounts entirely --- winner/loser were
@@ -106,23 +201,71 @@ export interface Group extends Avatar {
   code: string;
   name: string;
   bio: string | null;
-  tags: string | null; // comma-separated --- see parseTags()
   created_at: string;
 }
 
-/** `tags` is stored as one comma-separated column rather than a side table
- * --- there's no querying by tag, they're purely descriptive, so a join
- * would buy nothing a split() doesn't already give for free. */
-export function parseTags(tags: string | null): string[] {
-  if (!tags) return [];
-  return tags
-    .split(",")
-    .map((t) => t.trim())
-    .filter(Boolean);
+export interface Tag {
+  id: number;
+  name: string;
+  category: string;
 }
 
-export function joinTags(tags: string[]): string {
-  return tags.map((t) => t.trim()).filter(Boolean).join(",");
+/** Every curated tag, grouped by category, in the fixed display order the
+ * picker uses --- "custom" tags (typed by a group, not from the curated
+ * list) are deliberately left out: they're one-off by nature, and showing
+ * every custom tag anyone's ever typed would make the picker grow without
+ * bound. Re-typing an existing custom tag's name still reuses its row
+ * (findOrCreateTag), it just isn't offered as a checkbox.
+ */
+export function curatedTagsByCategory(): Record<string, Tag[]> {
+  const rows = db
+    .prepare("SELECT * FROM tags WHERE category != 'custom' ORDER BY name")
+    .all() as unknown as Tag[];
+  const byCategory: Record<string, Tag[]> = { "video-game": [], sport: [], "board-game": [] };
+  for (const row of rows) (byCategory[row.category] ??= []).push(row);
+  return byCategory;
+}
+
+export function tagById(id: number): Tag | undefined {
+  return db.prepare("SELECT * FROM tags WHERE id = ?").get(id) as Tag | undefined;
+}
+
+/** Looks up a tag by name (case-insensitive) or creates it --- this is how a
+ * group's custom tag text becomes a real row instead of a second, parallel
+ * storage mechanism, and how the legacy-CSV migration above reuses a
+ * curated tag's row instead of creating "FIFA" and "fifa" as two rows. */
+function findOrCreateTag(name: string, category: string): Tag {
+  const existing = db.prepare("SELECT * FROM tags WHERE name = ? COLLATE NOCASE").get(name) as Tag | undefined;
+  if (existing) return existing;
+  const info = db.prepare("INSERT INTO tags (name, category) VALUES (?, ?)").run(name, category);
+  return tagById(info.lastInsertRowid as number)!;
+}
+
+/** Sets a group's tags to exactly `tagIds` plus one real tag per name in
+ * `customNames` (created if they don't already exist). Replaces whatever
+ * the group had before, same as a fresh POST /groups --- there's no partial
+ * "add one tag" operation yet, since the only caller is group creation. */
+export function setGroupTags(groupId: number, tagIds: number[], customNames: string[]): void {
+  const resolvedIds = [...tagIds];
+  for (const raw of customNames) {
+    const name = raw.trim();
+    if (!name) continue;
+    resolvedIds.push(findOrCreateTag(name, "custom").id);
+  }
+  db.prepare("DELETE FROM group_tags WHERE group_id = ?").run(groupId);
+  const insert = db.prepare("INSERT OR IGNORE INTO group_tags (group_id, tag_id) VALUES (?, ?)");
+  for (const tagId of new Set(resolvedIds)) insert.run(groupId, tagId);
+}
+
+export function tagsForGroup(groupId: number): Tag[] {
+  return db
+    .prepare(
+      `SELECT tags.* FROM tags
+       JOIN group_tags ON group_tags.tag_id = tags.id
+       WHERE group_tags.group_id = ?
+       ORDER BY tags.category, tags.name`,
+    )
+    .all(groupId) as unknown as Tag[];
 }
 
 export interface Result {
@@ -147,19 +290,19 @@ function randomCode(length = 6): string {
 }
 
 /**
- * `bio` and `tags` are required by the HTTP layer (src/server.ts), not
- * here --- this function just stores whatever it's given, the same way
- * addResult() trusts its caller to have already checked membership. Avatar
- * is set separately via setGroupAvatar() once the row (and its id) exists.
+ * `bio` is required by the HTTP layer (src/server.ts), not here --- this
+ * function just stores whatever it's given, the same way addResult() trusts
+ * its caller to have already checked membership. Tags are set separately
+ * via setGroupTags(), and the avatar via setGroupAvatar(), both once the row
+ * (and its id) exists.
  */
-export function createGroup(name: string, bio: string, tags: string[]): Group {
+export function createGroup(name: string, bio: string): Group {
   let code = randomCode();
   while (getGroupByCode(code)) code = randomCode();
-  db.prepare("INSERT INTO groups (code, name, bio, tags, created_at) VALUES (?, ?, ?, ?, ?)").run(
+  db.prepare("INSERT INTO groups (code, name, bio, created_at) VALUES (?, ?, ?, ?)").run(
     code,
     name,
     bio,
-    joinTags(tags),
     new Date().toISOString(),
   );
   return getGroupByCode(code)!;

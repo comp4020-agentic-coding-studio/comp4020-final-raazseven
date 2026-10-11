@@ -15,11 +15,13 @@ import {
   memberByToken,
   membersForGroup,
   NameTakenError,
-  parseTags,
   registerMember,
   resultsForGroup,
   setGroupAvatar,
+  setGroupTags,
   setMemberAvatar,
+  tagById,
+  tagsForGroup,
   type Group,
 } from "./db.ts";
 import {
@@ -66,6 +68,7 @@ function renderGroupPage(
     resultsForGroup(group.id),
     membersForGroup(group.id),
     groupMatchesForGroup(group.id),
+    tagsForGroup(group.id),
     member,
     errors.authError,
     errors.resultError,
@@ -121,7 +124,10 @@ app.get("/readme/", async (_req, reply) => {
 // formbody) because a photo, when there is one, has to travel in the same
 // request as the text fields --- req.parts() reads both in one pass.
 app.post("/groups", async (req, reply) => {
-  const fields: Record<string, string> = {};
+  // A field can repeat (every checked "tagIds" checkbox arrives as its own
+  // part under the same name), so every text field is collected as an array
+  // and single-value fields just read [0].
+  const fields: Record<string, string[]> = {};
   let avatarBuffer: Buffer | undefined;
   let avatarMime: string | undefined;
   let avatarTruncated = false;
@@ -140,19 +146,31 @@ app.post("/groups", async (req, reply) => {
         }
       }
     } else {
-      fields[part.fieldname] = part.value as string;
+      (fields[part.fieldname] ??= []).push(part.value as string);
     }
   }
 
-  const name = fields.name?.trim();
-  const bio = fields.bio?.trim();
-  const tags = parseTags(fields.tags ?? "");
-  const prefill = { name: fields.name, bio: fields.bio, tags: fields.tags };
+  const name = fields.name?.[0]?.trim();
+  const bio = fields.bio?.[0]?.trim();
+  const customTagsRaw = fields.customTags?.[0] ?? "";
+  const customNames = customTagsRaw
+    .split(",")
+    .map((t) => t.trim())
+    .filter(Boolean);
+  // Only ids that actually resolve to a real tag count --- a crafted request
+  // naming a made-up id is dropped silently rather than creating a dangling
+  // group_tags row.
+  const tagIds = (fields.tagIds ?? [])
+    .map((id) => Number(id))
+    .filter((id) => Number.isInteger(id) && tagById(id) !== undefined);
+  const prefill = { name: fields.name?.[0], bio: fields.bio?.[0], tagIds, customTags: customTagsRaw };
   const fail = (createError: string) => reply.type("text/html").send(homePage({ createError, prefill }));
 
   if (!name) return fail("a group name is required");
   if (!bio) return fail("a short bio for the group is required");
-  if (tags.length === 0) return fail("at least one game tag is required (e.g. FIFA, Trivia)");
+  if (tagIds.length === 0 && customNames.length === 0) {
+    return fail("at least one game tag is required --- pick one or add your own");
+  }
   if (avatarBuffer) {
     if (avatarTruncated) return fail(`the photo must be ${AVATAR_MAX_BYTES / 1024}KB or smaller`);
     try {
@@ -163,7 +181,8 @@ app.post("/groups", async (req, reply) => {
     }
   }
 
-  const group = createGroup(name, bio, tags);
+  const group = createGroup(name, bio);
+  setGroupTags(group.id, tagIds, customNames);
   if (avatarBuffer) setGroupAvatar(group.id, avatarBuffer, avatarMime!);
   reply.redirect(`/g/${group.code}`, 303);
 });

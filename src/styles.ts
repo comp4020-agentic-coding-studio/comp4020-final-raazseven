@@ -375,6 +375,66 @@ export const baseStyles = `
     margin: 0.5rem 0;
   }
 
+  .tag-picker {
+    border: none;
+    padding: 0;
+    margin: 0 0 0.75rem;
+  }
+
+  .tag-picker legend {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    padding: 0;
+    margin-bottom: 0.4rem;
+  }
+
+  .tag-options {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+  }
+
+  /* A checkbox styled as a toggle chip: the input itself is visually
+     hidden but still present, focusable and keyboard-operable --- the
+     adjacent <span> is what actually looks like a chip, driven by the
+     sibling ":checked" selector rather than any JS. */
+  .tag-check {
+    cursor: pointer;
+  }
+
+  .tag-check input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .tag-check span {
+    display: inline-block;
+    font-size: 0.8rem;
+    font-weight: 600;
+    padding: 0.3rem 0.7rem;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+  }
+
+  .tag-check input:checked + span {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--accent-contrast);
+  }
+
+  .tag-check input:focus-visible + span {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
   select {
     font: inherit;
     font-size: 1rem;
