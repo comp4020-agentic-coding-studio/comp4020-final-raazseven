@@ -410,6 +410,14 @@ export const baseStyles = `
     font-size: 0.85rem;
   }
 
+  .member-chip a {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    color: inherit;
+    text-decoration: none;
+  }
+
   .role-badge {
     font-size: 0.65rem;
     font-weight: 700;

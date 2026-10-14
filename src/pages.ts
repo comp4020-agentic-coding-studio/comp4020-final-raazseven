@@ -1,5 +1,5 @@
 import type { Group, GroupMatch, MemberWithRole, MembershipWithGroup, Result, Role, Tag, User } from "./db.ts";
-import { getGroupById } from "./db.ts";
+import { getGroupById, participantsForResult } from "./db.ts";
 import { curatedTagsByCategory } from "./db.ts";
 import { baseStyles, iconChip, logoMark, siteHeader } from "./styles.ts";
 
@@ -410,20 +410,30 @@ export function mePage(user: User, memberships: MembershipWithGroup[], avatarErr
 }
 
 /** The inner markup of `#results-list` --- also what a live `result` event re-sends. */
+/** Renders one side of a result (winner or loser) as linked, avatar'd names,
+ * joined with "&" for a team --- falls back to the single denormalised name
+ * (no link, no avatar) only if `participantsForResult` somehow has nothing,
+ * which shouldn't happen for any result logged after team results shipped. */
+function sideNames(resultId: number, side: "winner" | "loser", fallbackName: string): string {
+  const participants = participantsForResult(resultId, side);
+  if (participants.length === 0) return escapeHtml(fallbackName);
+  return participants
+    .map((p) => `${avatarImg(userAvatarUrl(p.id), p.name)}<a href="/u/${p.id}">${escapeHtml(p.name)}</a>`)
+    .join(" &amp; ");
+}
+
 export function resultsListFragment(group: Group, results: Result[]): string {
   if (results.length === 0) {
     return `<p class="empty">No results yet. Be the first to log one.</p>`;
   }
   const rows = results
     .map((r) => {
-      const winnerAvatar = r.winner_user_id ? avatarImg(userAvatarUrl(r.winner_user_id), r.winner) : "";
       return `<li class="result-row">
         <div class="matchup">
           <span class="game">${escapeHtml(r.game)}</span>
-          ${winnerAvatar}
-          <span class="winner">${escapeHtml(r.winner)}</span>
+          <span class="winner">${sideNames(r.id, "winner", r.winner)}</span>
           <span>beat</span>
-          <span class="loser">${escapeHtml(r.loser)}</span>
+          <span class="loser">${sideNames(r.id, "loser", r.loser)}</span>
         </div>
         <span class="when">${new Date(r.created_at).toLocaleString("en-AU", { dateStyle: "medium", timeStyle: "short" })}</span>
       </li>`;
@@ -472,10 +482,16 @@ const liveScript = (code: string) => `
   function swapOptions(selectId, html) {
     var el = document.getElementById(selectId);
     if (!el) return;
-    var previous = el.value;
+    // A multi-select can have more than one chosen option at once (a team
+    // result) --- capture the full selected set, not just el.value (which
+    // only ever reports the first), and restore whichever of those ids
+    // still exist in the refreshed option list.
+    var previous = Array.prototype.filter.call(el.options, function (o) { return o.selected; })
+      .map(function (o) { return o.value; });
     el.innerHTML = html;
-    var stillThere = Array.prototype.some.call(el.options, function (o) { return o.value === previous; });
-    if (stillThere) el.value = previous;
+    Array.prototype.forEach.call(el.options, function (o) {
+      if (previous.indexOf(o.value) !== -1) o.selected = true;
+    });
   }
   function swapInner(id, html) {
     var el = document.getElementById(id);
@@ -514,8 +530,10 @@ export function groupPage(
       .map((m) => {
         const canRemove = isOwner && user && m.id !== user.id && m.role !== "owner";
         return `<div class="member-chip">
-          ${avatarImg(userAvatarUrl(m.id), m.name, "sm")}
-          <span>${escapeHtml(m.name)}</span>
+          <a href="/u/${m.id}">
+            ${avatarImg(userAvatarUrl(m.id), m.name, "sm")}
+            <span>${escapeHtml(m.name)}</span>
+          </a>
           ${m.role === "owner" ? `<span class="role-badge">Owner</span>` : ""}
           ${
             canRemove
@@ -551,14 +569,15 @@ export function groupPage(
   const logResultCard = isMember
     ? `<div class="card">
         <h2 style="margin-top:0">Log a result</h2>
+        <p class="lede" style="font-size:0.8rem; margin:-0.25rem 0 0.5rem">Hold ⌘/Ctrl to pick more than one player per side --- a 2v1 or a team result works the same way as a plain 1v1.</p>
         ${resultError ? `<p class="error-text">${escapeHtml(resultError)}</p>` : ""}
         <form method="post" action="/g/${code}/results">
           <label for="game">Game</label>
           <input id="game" name="game" required placeholder="e.g. FIFA, NBA 2K, basketball" />
-          <label for="winner-select">Winner</label>
-          <select id="winner-select" name="winner" required>${memberOptions}</select>
-          <label for="loser-select">Loser</label>
-          <select id="loser-select" name="loser" required>${memberOptions}</select>
+          <label for="winner-select">Winner(s)</label>
+          <select id="winner-select" name="winner" multiple required size="4">${memberOptions}</select>
+          <label for="loser-select">Loser(s)</label>
+          <select id="loser-select" name="loser" multiple required size="4">${memberOptions}</select>
           <button type="submit">Log result</button>
         </form>
       </div>`
@@ -642,4 +661,82 @@ export function groupPage(
     liveScript(group.code),
     user,
   );
+}
+
+/** A friend's profile: shared groups, and --- only once you're signed in, and
+ * only through a group you're currently in together --- your head-to-head
+ * and teamed-up history with them. The viewer's own current membership is
+ * the server-checked visibility boundary
+ * (decisions/0003-team-results-and-profile-visibility.md), computed in
+ * src/server.ts before this ever renders, not re-derived here. */
+export function profilePage(
+  viewer: User | undefined,
+  owner: User,
+  sharedGroups: Group[],
+  headToHead: Result[],
+  teamedUp: Result[],
+): string {
+  const nextParam = encodeURIComponent(`/u/${owner.id}`);
+  const signInPrompt = !viewer
+    ? `<div class="card">
+        <h2 style="margin-top:0">Log in to see shared history</h2>
+        <p class="lede" style="font-size:0.85rem">Your match history with ${escapeHtml(owner.name)} only shows once you're signed in and share a group with them.</p>
+        <div class="hero-actions" style="justify-content:flex-start">
+          <a class="btn-solid" href="/signup?next=${nextParam}">Sign up</a>
+          <a class="btn-ghost" href="/login?next=${nextParam}">Log in</a>
+        </div>
+      </div>`
+    : sharedGroups.length === 0
+      ? `<p class="empty">You don't share a group with ${escapeHtml(owner.name)}, so there's no history to show.</p>`
+      : "";
+
+  return layout(
+    `${owner.name} — Score's in Check`,
+    `<div class="profile-header">
+      ${avatarImg(userAvatarUrl(owner.id), owner.name, "lg")}
+      <div class="profile-header-text">
+        <h1 style="margin-bottom:0.1rem">${escapeHtml(owner.name)}</h1>
+        <p class="lede" style="margin-top:0">${
+          sharedGroups.length > 0
+            ? `Shares ${sharedGroups.length} group${sharedGroups.length === 1 ? "" : "s"} with you: ${sharedGroups.map((g) => escapeHtml(g.name)).join(", ")}`
+            : "No groups in common with you"
+        }</p>
+      </div>
+    </div>
+    ${signInPrompt}
+    ${
+      viewer && sharedGroups.length > 0
+        ? `<h2>Head-to-head</h2>
+           ${headToHead.length === 0 ? `<p class="empty">You haven't played against ${escapeHtml(owner.name)} yet.</p>` : resultsListFragmentForProfile(headToHead)}
+           <h2>Teamed up</h2>
+           ${teamedUp.length === 0 ? `<p class="empty">You haven't teamed up with ${escapeHtml(owner.name)} yet.</p>` : resultsListFragmentForProfile(teamedUp)}`
+        : ""
+    }`,
+    undefined,
+    viewer,
+  );
+}
+
+/** `resultsListFragment` needs a `Group` only to pass through to
+ * `addResult`-era callers that never read it --- a profile page has no
+ * single group in view (results here can span several shared groups), so
+ * this calls the same per-result renderer directly instead of threading a
+ * placeholder group through. */
+function resultsListFragmentForProfile(results: Result[]): string {
+  const rows = results
+    .map((r) => {
+      const group = getGroupById(r.group_id);
+      return `<li class="result-row">
+        <div class="matchup">
+          <span class="game">${escapeHtml(r.game)}</span>
+          <span class="winner">${sideNames(r.id, "winner", r.winner)}</span>
+          <span>beat</span>
+          <span class="loser">${sideNames(r.id, "loser", r.loser)}</span>
+          ${group ? `<a class="lede" style="font-size:0.75rem" href="/g/${encodeURIComponent(group.code)}">in ${escapeHtml(group.name)}</a>` : ""}
+        </div>
+        <span class="when">${new Date(r.created_at).toLocaleString("en-AU", { dateStyle: "medium", timeStyle: "short" })}</span>
+      </li>`;
+    })
+    .join("\n");
+  return `<ul class="results-list">${rows}</ul>`;
 }

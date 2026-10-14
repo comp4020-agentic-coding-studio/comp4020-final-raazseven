@@ -164,7 +164,7 @@ for (const spec of SEED_GROUPS) {
   for (const r of spec.results) {
     const winner = findMember(members, r.winner);
     const loser = findMember(members, r.loser);
-    addResult(group.id, r.game, winner.id, loser.id);
+    addResult(group.id, r.game, [winner.id], [loser.id]);
   }
   console.log(`  logged ${spec.results.length} result(s)`);
 }

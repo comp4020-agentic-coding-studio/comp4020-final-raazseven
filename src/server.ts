@@ -9,9 +9,11 @@ import {
   getGroupByCode,
   getUserById,
   groupMatchesForGroup,
+  headToHeadResults,
   InvalidCredentialsError,
   joinGroup,
   loginUser,
+  logAction,
   logoutUser,
   memberInGroup,
   membersForGroup,
@@ -26,6 +28,7 @@ import {
   setUserAvatar,
   tagById,
   tagsForGroup,
+  teamedUpResults,
   updateGroupProfile,
   userByToken,
   type Group,
@@ -47,6 +50,7 @@ import {
   memberOptionsFragment,
   mePage,
   newGroupPage,
+  profilePage,
   resultsListFragment,
   signupPage,
 } from "./pages.ts";
@@ -75,6 +79,22 @@ const sessionCookieOpts = () => ({
 
 function currentUser(req: { cookies: Record<string, string | undefined> }): User | undefined {
   return userByToken(req.cookies[SESSION_COOKIE]);
+}
+
+/** Records one action both ways: a structured line through the request's own
+ * logger (what `flyctl logs -a <app>` tails live, per crit 10's brief ---
+ * "the presenter narrates from the logs") and a row in `audit_log` (crit 10
+ * line 3: the logging has to outlive the crit itself, not just the log
+ * buffer). `actorUserId` is null for an action with no signed-in actor. */
+function record(
+  req: FastifyRequest,
+  actorUserId: number | null,
+  action: string,
+  groupId: number | null,
+  detail: string,
+): void {
+  req.log.info({ action, actorUserId, groupId, detail }, action);
+  logAction(actorUserId, action, groupId, detail);
 }
 
 /** Only ever a same-site path --- an unchecked `next` would be an open
@@ -171,6 +191,7 @@ app.post<{ Body: { name: string; password: string; next?: string } }>("/signup",
     if (err instanceof NameTakenError) return fail(err.message);
     throw err;
   }
+  record(req, user.id, "signup", null, `"${user.name}" created an account`);
   reply.setCookie(SESSION_COOKIE, user.token, sessionCookieOpts()).redirect(next, 303);
 });
 
@@ -192,12 +213,16 @@ app.post<{ Body: { name: string; password: string; next?: string } }>("/login", 
     }
     throw err;
   }
+  record(req, user.id, "login", null, `"${user.name}" logged in`);
   reply.setCookie(SESSION_COOKIE, user.token, sessionCookieOpts()).redirect(next, 303);
 });
 
 app.post("/logout", async (req, reply) => {
   const user = currentUser(req);
-  if (user) logoutUser(user.id);
+  if (user) {
+    logoutUser(user.id);
+    record(req, user.id, "logout", null, `"${user.name}" logged out`);
+  }
   reply.clearCookie(SESSION_COOKIE, { path: "/" }).redirect("/", 303);
 });
 
@@ -300,6 +325,7 @@ app.post("/groups", async (req, reply) => {
   setGroupTags(group.id, tagIds, customNames);
   if (avatarBuffer) setGroupAvatar(group.id, avatarBuffer, avatarMime!);
   joinGroup(user.id, group.id, "owner");
+  record(req, user.id, "group.create", group.id, `"${user.name}" created group "${group.name}" (${group.code})`);
   reply.redirect(`/g/${group.code}`, 303);
 });
 
@@ -347,6 +373,7 @@ app.post<{ Params: { code: string } }>("/g/:code/join", async (req, reply) => {
   const user = currentUser(req);
   if (!user) return reply.redirect(`/login?next=${encodeURIComponent(`/g/${group.code}`)}`, 303);
   joinGroup(user.id, group.id, "member");
+  record(req, user.id, "group.join", group.id, `"${user.name}" joined group "${group.name}" (${group.code})`);
   // This used to broadcast from the old per-group /register route; joining
   // (not signing up, which has no group context at all) is the new "someone
   // became pickable in the winner/loser dropdowns" moment.
@@ -354,7 +381,18 @@ app.post<{ Params: { code: string } }>("/g/:code/join", async (req, reply) => {
   reply.redirect(`/g/${group.code}`, 303);
 });
 
-app.post<{ Params: { code: string }; Body: { game: string; winner: string; loser: string } }>(
+/** Reads a possibly-repeated form field (formbody parses several same-named
+ * parts into an array automatically; a single part stays a bare string) as a
+ * deduplicated set of valid integer ids --- the same pattern the group-tags
+ * form already uses for `tagIds`. */
+function idSet(raw: string | string[] | undefined): Set<number> {
+  const values = raw === undefined ? [] : ([] as string[]).concat(raw);
+  return new Set(
+    values.map((v) => Number(v)).filter((id) => Number.isInteger(id)),
+  );
+}
+
+app.post<{ Params: { code: string }; Body: { game: string; winner: string | string[]; loser: string | string[] } }>(
   "/g/:code/results",
   async (req, reply) => {
     const group = getGroupByCode(req.params.code.toUpperCase());
@@ -369,29 +407,39 @@ app.post<{ Params: { code: string }; Body: { game: string; winner: string; loser
     }
 
     const game = req.body.game?.trim();
-    const winnerId = Number(req.body.winner);
-    const loserId = Number(req.body.loser);
-    if (!game || !Number.isInteger(winnerId) || !Number.isInteger(loserId)) {
+    const winnerIds = idSet(req.body.winner);
+    const loserIds = idSet(req.body.loser);
+    if (!game || winnerIds.size === 0 || loserIds.size === 0) {
       return reply
         .type("text/html")
-        .send(renderGroupPage(group, user, { resultError: "game, winner and loser are all required" }));
+        .send(renderGroupPage(group, user, { resultError: "game, at least one winner and at least one loser are required" }));
     }
-    if (winnerId === loserId) {
+    // A side can be a team (any number of people), but no one can be on
+    // both sides of the same result --- the original single-id check
+    // generalized to a set-intersection one.
+    const overlap = [...winnerIds].some((id) => loserIds.has(id));
+    if (overlap) {
       return reply
         .type("text/html")
         .send(renderGroupPage(group, user, { resultError: "winner and loser can't be the same player" }));
     }
-    // Both players have to already be members of this group --- a result
+    // Everyone named has to already be a member of this group --- a result
     // can't be logged against someone who was never there.
-    const winner = memberInGroup(group.id, winnerId);
-    const loser = memberInGroup(group.id, loserId);
-    if (!winner || !loser) {
+    const allMembers = [...winnerIds, ...loserIds].every((id) => memberInGroup(group.id, id));
+    if (!allMembers) {
       return reply
         .type("text/html")
         .send(renderGroupPage(group, user, { resultError: "winner and loser must both be members of this group" }));
     }
 
-    addResult(group.id, game, winnerId, loserId);
+    const result = addResult(group.id, game, [...winnerIds], [...loserIds]);
+    record(
+      req,
+      user.id,
+      "result.create",
+      group.id,
+      `"${user.name}" logged ${game}: ${result.winner} beat ${result.loser} in "${group.name}"`,
+    );
     broadcast(group.code, { type: "result", html: resultsListFragment(group, resultsForGroup(group.id)) });
     reply.redirect(`/g/${group.code}`, 303);
   },
@@ -425,6 +473,13 @@ app.post<{ Params: { code: string }; Body: { opponentCode: string; game: string;
     }
 
     addGroupMatch(group.id, opponent.id, game, scoreUs, scoreThem, user.id);
+    record(
+      req,
+      user.id,
+      "group-match.create",
+      group.id,
+      `"${user.name}" logged a ${game} match: "${group.name}" ${scoreUs}-${scoreThem} "${opponent.name}"`,
+    );
     broadcast(group.code, { type: "group-match", html: groupMatchesFragment(group, groupMatchesForGroup(group.id)) });
     broadcast(opponent.code, {
       type: "group-match",
@@ -471,6 +526,7 @@ app.post<{ Params: { code: string }; Body: { bio: string; tagIds?: string | stri
     }
 
     updateGroupProfile(group.id, bio, tagIds, customNames);
+    record(req, user!.id, "group.profile-update", group.id, `"${user!.name}" updated "${group.name}"'s profile`);
     reply.redirect(`/g/${group.code}`, 303);
   },
 );
@@ -502,6 +558,7 @@ app.post<{ Params: { code: string } }>("/g/:code/avatar", async (req, reply) => 
     throw err;
   }
 
+  record(req, user!.id, "group.avatar-update", group.id, `"${user!.name}" updated "${group.name}"'s photo`);
   reply.redirect(`/g/${group.code}`, 303);
 });
 
@@ -516,8 +573,42 @@ app.post<{ Params: { code: string; userId: string } }>("/g/:code/members/:userId
   const target: MemberWithRole | undefined = memberInGroup(group.id, targetId);
   // No ownership transfer feature --- removing the owner (including
   // yourself) would leave the group with nobody able to manage it.
-  if (target && target.role !== "owner") removeMembership(targetId, group.id);
+  if (target && target.role !== "owner") {
+    removeMembership(targetId, group.id);
+    record(
+      req,
+      user!.id,
+      "member.remove",
+      group.id,
+      `"${user!.name}" removed "${target.name}" from "${group.name}"`,
+    );
+  }
   reply.redirect(`/g/${group.code}`, 303);
+});
+
+app.get<{ Params: { id: string } }>("/u/:id", async (req, reply) => {
+  const viewer = currentUser(req);
+  const targetId = Number(req.params.id);
+  if (!Number.isInteger(targetId)) return reply.code(404).send("no such user");
+  if (viewer && viewer.id === targetId) return reply.redirect("/me", 303);
+
+  const owner = getUserById(targetId);
+  if (!owner) return reply.code(404).send("no such user");
+
+  // Visibility rule (decisions/0003-team-results-and-profile-visibility.md):
+  // a viewer only sees history with `owner` through a group they, the
+  // viewer, currently belong to --- the viewer's own membership is the
+  // boundary, not the target's, and it's checked here on the server, not
+  // left to what the page happens to render.
+  const viewerGroupIds = viewer ? new Set(membershipsForUser(viewer.id).map((m) => m.group.id)) : new Set<number>();
+  const sharedGroups = membershipsForUser(owner.id)
+    .map((m) => m.group)
+    .filter((g) => viewerGroupIds.has(g.id));
+
+  const headToHead = viewer ? headToHeadResults(viewer.id, owner.id) : [];
+  const teamedUp = viewer ? teamedUpResults(viewer.id, owner.id) : [];
+
+  reply.type("text/html").send(profilePage(viewer, owner, sharedGroups, headToHead, teamedUp));
 });
 
 const port = Number(process.env.PORT ?? 8080);

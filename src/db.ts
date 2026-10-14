@@ -95,6 +95,31 @@ db.exec(`
     created_at TEXT NOT NULL,
     UNIQUE(user_id, group_id)
   );
+
+  -- One row per person per side of a result --- lets a result have any
+  -- number of winners and losers (a 2v1, a 3v3), not just exactly one of
+  -- each. results.winner/loser (text) and winner_user_id/loser_user_id stay
+  -- as the first name/id per side, for every render path and test that
+  -- predates team results; this table is the full roster.
+  CREATE TABLE IF NOT EXISTS result_participants (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    result_id INTEGER NOT NULL REFERENCES results(id),
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    side TEXT NOT NULL CHECK (side IN ('winner', 'loser'))
+  );
+
+  -- Who did what, server-side, kept forever (crit 10: "the logging outlives
+  -- the crit") --- a durable companion to the request logger (src/server.ts's
+  -- Fastify logger), which flyctl logs can tail live but doesn't retain past
+  -- the machine's own log buffer.
+  CREATE TABLE IF NOT EXISTS audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor_user_id INTEGER REFERENCES users(id),
+    action TEXT NOT NULL,
+    group_id INTEGER REFERENCES groups(id),
+    detail TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
 `);
 
 // Migration: earlier deploys created `members` without a password (names
@@ -334,6 +359,27 @@ if (unmigratedMembers.length > 0) {
   }
 }
 
+// Migration: result_participants didn't exist before team results ---
+// backfill one row per side for every result logged before this feature
+// shipped, from its existing winner_user_id/loser_user_id, so old 1v1
+// results show up in head-to-head/teamed-up history the same as new ones.
+// Guarded by "already has participant rows" so this only ever runs once per
+// result, same idempotency style as the column-presence checks above.
+const resultsNeedingBackfill = db
+  .prepare(
+    `SELECT id, winner_user_id, loser_user_id FROM results
+     WHERE id NOT IN (SELECT DISTINCT result_id FROM result_participants)
+       AND winner_user_id IS NOT NULL AND loser_user_id IS NOT NULL`,
+  )
+  .all() as Array<{ id: number; winner_user_id: number; loser_user_id: number }>;
+const insertParticipant = db.prepare(
+  "INSERT INTO result_participants (result_id, user_id, side) VALUES (?, ?, ?)",
+);
+for (const r of resultsNeedingBackfill) {
+  insertParticipant.run(r.id, r.winner_user_id, "winner");
+  insertParticipant.run(r.id, r.loser_user_id, "loser");
+}
+
 export interface Avatar {
   avatar_blob: Buffer | null;
   avatar_mime: string | null;
@@ -477,26 +523,108 @@ export function updateGroupProfile(groupId: number, bio: string, tagIds: number[
 }
 
 /**
- * Logs a player-level result. `winnerId`/`loserId` are user ids and must
- * already be members of `groupId` --- the caller (src/server.ts) is
- * responsible for checking that, since this is where the names get
- * denormalised for display.
+ * Logs a result between two sides, each one or more people --- a plain 1v1
+ * is just the one-id-per-side case. `winnerIds`/`loserIds` are user ids and
+ * must already be members of `groupId`, and the two sides must be disjoint
+ * --- the caller (src/server.ts) is responsible for checking both, since
+ * this is where the names get denormalised for display.
+ *
+ * `winner`/`loser` (text) and `winner_user_id`/`loser_user_id` keep storing
+ * only the first id/name per side --- every render path and test that
+ * predates team results reads those columns, so they stay populated and
+ * accurate for a 1v1; `result_participants` is the full roster for a side
+ * with more than one person.
  */
-export function addResult(groupId: number, game: string, winnerId: number, loserId: number): Result {
-  const winner = getUserById(winnerId)!;
-  const loser = getUserById(loserId)!;
+export function addResult(groupId: number, game: string, winnerIds: number[], loserIds: number[]): Result {
+  const winners = winnerIds.map((id) => getUserById(id)!);
+  const losers = loserIds.map((id) => getUserById(id)!);
+  const winnerText = winners.map((u) => u.name).join(" & ");
+  const loserText = losers.map((u) => u.name).join(" & ");
   const info = db
     .prepare(
       "INSERT INTO results (group_id, game, winner, loser, winner_user_id, loser_user_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
-    .run(groupId, game, winner.name, loser.name, winnerId, loserId, new Date().toISOString());
-  return db.prepare("SELECT * FROM results WHERE id = ?").get(info.lastInsertRowid) as unknown as Result;
+    .run(groupId, game, winnerText, loserText, winnerIds[0], loserIds[0], new Date().toISOString());
+  const resultId = info.lastInsertRowid as number;
+  const insertParticipant = db.prepare(
+    "INSERT INTO result_participants (result_id, user_id, side) VALUES (?, ?, ?)",
+  );
+  for (const id of winnerIds) insertParticipant.run(resultId, id, "winner");
+  for (const id of loserIds) insertParticipant.run(resultId, id, "loser");
+  return db.prepare("SELECT * FROM results WHERE id = ?").get(resultId) as unknown as Result;
 }
 
 export function resultsForGroup(groupId: number): Result[] {
   return db
     .prepare("SELECT * FROM results WHERE group_id = ? ORDER BY created_at DESC, id DESC")
     .all(groupId) as unknown as Result[];
+}
+
+export interface ResultParticipant {
+  id: number;
+  name: string;
+}
+
+/** Every person on one side of a result, in the order they were logged ---
+ * the full roster for a team result, where winner/loser (text) only ever
+ * holds the first name. */
+export function participantsForResult(resultId: number, side: "winner" | "loser"): ResultParticipant[] {
+  return db
+    .prepare(
+      `SELECT users.id, users.name FROM result_participants
+       JOIN users ON users.id = result_participants.user_id
+       WHERE result_participants.result_id = ? AND result_participants.side = ?
+       ORDER BY result_participants.id ASC`,
+    )
+    .all(resultId, side) as unknown as ResultParticipant[];
+}
+
+/** Results where `viewerId` and `otherId` were on opposite sides, in any
+ * group `viewerId` currently belongs to --- "currently" because group
+ * membership is the visibility boundary (decisions/0003), not whether
+ * `otherId` is still around to consent each time. */
+export function headToHeadResults(viewerId: number, otherId: number): Result[] {
+  const viewerGroupIds = membershipsForUser(viewerId).map((m) => m.group.id);
+  if (viewerGroupIds.length === 0) return [];
+  const placeholders = viewerGroupIds.map(() => "?").join(",");
+  return db
+    .prepare(
+      `SELECT DISTINCT results.* FROM results
+       JOIN result_participants AS viewer_side ON viewer_side.result_id = results.id AND viewer_side.user_id = ?
+       JOIN result_participants AS other_side ON other_side.result_id = results.id AND other_side.user_id = ?
+       WHERE viewer_side.side != other_side.side AND results.group_id IN (${placeholders})
+       ORDER BY results.created_at DESC, results.id DESC`,
+    )
+    .all(viewerId, otherId, ...viewerGroupIds) as unknown as Result[];
+}
+
+/** Results where `viewerId` and `otherId` were on the same side, in any
+ * group `viewerId` currently belongs to --- see headToHeadResults() for why
+ * the viewer's own membership is the boundary. */
+export function teamedUpResults(viewerId: number, otherId: number): Result[] {
+  const viewerGroupIds = membershipsForUser(viewerId).map((m) => m.group.id);
+  if (viewerGroupIds.length === 0) return [];
+  const placeholders = viewerGroupIds.map(() => "?").join(",");
+  return db
+    .prepare(
+      `SELECT DISTINCT results.* FROM results
+       JOIN result_participants AS viewer_side ON viewer_side.result_id = results.id AND viewer_side.user_id = ?
+       JOIN result_participants AS other_side ON other_side.result_id = results.id AND other_side.user_id = ?
+       WHERE viewer_side.side = other_side.side AND results.group_id IN (${placeholders})
+       ORDER BY results.created_at DESC, results.id DESC`,
+    )
+    .all(viewerId, otherId, ...viewerGroupIds) as unknown as Result[];
+}
+
+/** Records one durable, server-side "who did what" row (crit 10: the
+ * logging has to outlive the crit itself, not just live in flyctl's log
+ * buffer). `actorUserId` is null for an action with no signed-in actor (a
+ * failed login attempt, say); `groupId` is null for an account-level action
+ * with no group context (signup, login, logout). */
+export function logAction(actorUserId: number | null, action: string, groupId: number | null, detail: string): void {
+  db.prepare(
+    "INSERT INTO audit_log (actor_user_id, action, group_id, detail, created_at) VALUES (?, ?, ?, ?, ?)",
+  ).run(actorUserId, action, groupId, detail, new Date().toISOString());
 }
 
 export interface GroupMatch {
