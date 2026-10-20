@@ -61,3 +61,51 @@ Verified end-to-end on a throwaway `DB_PATH`: typecheck clean, 48/48 spec
 tests green (39 pre-existing + 9 new), and `audit_log` rows actually land
 and are queryable via a direct `node:sqlite` read against the dev database
 file, not just asserted through the HTTP layer.
+
+## 2026-10-20
+
+Asked for a "liquid glass" UI, right after installing a course-external
+Claude plugin (`liquid-glass@liquid-glass-skills`) by name. Loading its
+skill showed it's Apple's SwiftUI design language for iOS/macOS 26
+(`.glassEffect()`, `GlassEffectContainer`, `buttonStyle(.glass)`) --- this
+app is server-rendered HTML/CSS from a Fastify app with no SwiftUI anywhere,
+so the plugin's actual APIs didn't transfer. Confirmed scope with the person
+(hand-built CSS glass look vs. header-only vs. everywhere) before touching
+`src/styles.ts`, rather than assuming "everywhere" from the one-line ask.
+
+Implemented the look entirely in CSS custom properties (`--glass-bg`,
+`--glass-border`, `--glass-highlight`, `--glass-blur`) layered onto the
+existing light/dark `:root` blocks, so every surface (header, `.card`,
+buttons, inputs, chips) reads off the same few tokens instead of each
+getting its own one-off `backdrop-filter` rule. Added a
+`prefers-reduced-transparency: reduce` block that collapses the tokens back
+to the plain opaque `--surface` colour --- glass is decorative, and a user
+or engine that can't render blur still gets a readable page, not an
+invisible one.
+
+Technique: `backdrop-filter` needs genuine visual variation *behind* the
+blurred element to read as glass at all --- a flat `--bg` colour blurs into
+itself and looks identical to a plain translucent box. Added fixed
+(non-scrolling) radial-gradient colour blobs on `body` using the existing
+accent/teal/pink tokens so the header and cards have something to actually
+refract as you scroll past them.
+
+Gotcha hit: no browser available for visual verification out of the box.
+`npx playwright install` failed (no passwordless sudo to install system
+deps), and the locally cached Chromium build was missing `libnspr4`,
+`libnss3`, `libsmime3`, `libnssutil3`, `libasound.so.2`. Fixed without root
+by `apt-get download`-ing the four `.deb`s (download doesn't require root,
+only `apt-get install` does) and extracting them with `dpkg-deb -x` into a
+scratch dir, then launching Chromium with `LD_LIBRARY_PATH` pointed at the
+extracted `.so` files --- avoided installing anything system-wide. One of
+the downloaded `.deb`s landed in the repo root by accident (ran `apt-get
+download` from the project directory) and had to be caught in `git status`
+and deleted before committing.
+
+Verified visually with real Playwright screenshots (home page light mode,
+dark mode, login form, post-signup dashboard) rather than just reading the
+CSS --- confirmed the blur, the specular highlight line, and the sticky
+glass header all actually render, not just typecheck. Also re-ran
+`pnpm test` against the app on port 8080 (the suite's expected port per
+`spec/global-setup.ts`, not the `dev` script's 3000) --- 48/48 still green,
+confirming the CSS-only change didn't touch anything the spec checks.
