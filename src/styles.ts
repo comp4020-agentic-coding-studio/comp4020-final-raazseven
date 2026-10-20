@@ -20,11 +20,20 @@ export const baseStyles = `
     --accent-pink: #db2777;
     --font-display: "Sora", ui-sans-serif, system-ui, sans-serif;
     /* The page's content width, in one place so the header, main content and
-       footer always widen together --- see the breakpoints below. Phones get
-       the same single readable column as always; tablet and desktop get
-       more room, and the group page turns that into a real two-column
-       layout (.group-layout) instead of stretching one column thin. */
-    --page-width: 40rem;
+       footer always widen together. clamp(floor, 90vw, ceiling) instead of
+       the three fixed breakpoints this used to jump between --- those
+       plateaued at 72rem starting at 1024px, so any screen wider than that
+       (a 1440px or 1920px monitor, say) left a large empty gutter on both
+       sides that never grew with the window; this keeps growing up to
+       100rem instead. The 40rem floor matters on narrow screens: a bare
+       90vw alone would read as *less* than the viewport there (phones
+       already fit their content to the viewport minus main's own 1.25rem
+       padding), adding a second, unwanted gutter on top of that padding ---
+       clamp's floor keeps the same single full-width column phones always
+       had. The group page still turns wide space into a real two-column
+       layout (.group-layout) via its own 900px breakpoint, independent of
+       this. */
+    --page-width: clamp(40rem, 90vw, 100rem);
 
     /* Liquid-glass surface tokens: a translucent fill, a brighter top edge
        to fake a specular highlight, and a blur radius shared by every glass
@@ -38,14 +47,6 @@ export const baseStyles = `
     --glass-blur: 20px;
     --glass-accent-bg: color-mix(in srgb, var(--accent) 78%, transparent);
     --glass-accent-border: color-mix(in srgb, var(--accent) 55%, white 20%);
-  }
-
-  @media (min-width: 700px) {
-    :root { --page-width: 48rem; }
-  }
-
-  @media (min-width: 1024px) {
-    :root { --page-width: 72rem; }
   }
 
   @media (prefers-color-scheme: dark) {
