@@ -25,6 +25,19 @@ export const baseStyles = `
        more room, and the group page turns that into a real two-column
        layout (.group-layout) instead of stretching one column thin. */
     --page-width: 40rem;
+
+    /* Liquid-glass surface tokens: a translucent fill, a brighter top edge
+       to fake a specular highlight, and a blur radius shared by every glass
+       surface (header, cards, buttons, inputs) so they read as one material
+       rather than several different translucent effects. */
+    --glass-bg: rgba(255, 255, 255, 0.55);
+    --glass-bg-strong: rgba(255, 255, 255, 0.72);
+    --glass-border: rgba(255, 255, 255, 0.6);
+    --glass-highlight: rgba(255, 255, 255, 0.85);
+    --glass-shadow: 0 8px 32px rgba(31, 35, 40, 0.1);
+    --glass-blur: 20px;
+    --glass-accent-bg: color-mix(in srgb, var(--accent) 78%, transparent);
+    --glass-accent-border: color-mix(in srgb, var(--accent) 55%, white 20%);
   }
 
   @media (min-width: 700px) {
@@ -52,6 +65,26 @@ export const baseStyles = `
       --accent-amber: #fbbf24;
       --accent-teal: #2dd4bf;
       --accent-pink: #f472b6;
+
+      --glass-bg: rgba(40, 44, 52, 0.45);
+      --glass-bg-strong: rgba(40, 44, 52, 0.6);
+      --glass-border: rgba(255, 255, 255, 0.12);
+      --glass-highlight: rgba(255, 255, 255, 0.16);
+      --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+      --glass-accent-bg: color-mix(in srgb, var(--accent) 55%, transparent);
+      --glass-accent-border: color-mix(in srgb, var(--accent) 60%, white 10%);
+    }
+  }
+
+  /* backdrop-filter is unsupported or disabled on some engines (older
+     Firefox, forced-colors / reduced-transparency modes) --- this keeps the
+     glass surfaces readable as plain translucent-over-solid panels instead
+     of invisible ones when the blur itself can't render. */
+  @media (prefers-reduced-transparency: reduce) {
+    :root {
+      --glass-bg: var(--surface);
+      --glass-bg-strong: var(--surface);
+      --glass-blur: 0px;
     }
   }
 
@@ -83,7 +116,6 @@ export const baseStyles = `
 
   body {
     margin: 0;
-    background: var(--bg);
     color: var(--text);
     font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
     line-height: 1.55;
@@ -91,11 +123,31 @@ export const baseStyles = `
        what stops one long, space-less word from forcing horizontal scroll
        instead of wrapping. */
     overflow-wrap: break-word;
+    /* Glass surfaces need something with texture behind them to actually
+       refract --- a flat --bg colour would make every blurred panel below
+       look identical to a plain translucent rectangle. These are fixed
+       (not scrolled) soft colour blobs so the glass keeps catching light
+       as you scroll past different content, the way it would over a real
+       backdrop. */
+    background-color: var(--bg);
+    background-image:
+      radial-gradient(ellipse 60% 50% at 15% 0%, color-mix(in srgb, var(--accent) 20%, transparent) 0%, transparent 60%),
+      radial-gradient(ellipse 50% 45% at 90% 15%, color-mix(in srgb, var(--accent-teal) 16%, transparent) 0%, transparent 60%),
+      radial-gradient(ellipse 55% 50% at 50% 100%, color-mix(in srgb, var(--accent-pink) 12%, transparent) 0%, transparent 65%);
+    background-attachment: fixed;
+    background-repeat: no-repeat;
   }
 
   header.site {
-    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    border-bottom: 1px solid var(--glass-border);
     padding: 1rem 1.25rem;
+    background: var(--glass-bg);
+    backdrop-filter: blur(var(--glass-blur)) saturate(1.6);
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.6);
+    box-shadow: var(--glass-shadow);
   }
 
   header.site .brand-row {
@@ -149,14 +201,21 @@ export const baseStyles = `
     font-weight: 600;
     font-size: 0.9rem;
     padding: 0.45rem 0.9rem;
-    border-radius: 8px;
+    border-radius: 999px;
     color: var(--text);
-    border: 1px solid var(--border);
+    border: 1px solid var(--glass-border);
+    background: var(--glass-bg);
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
+    box-shadow: inset 0 1px 0 var(--glass-highlight), 0 1px 3px rgba(16, 24, 40, 0.06);
+    transition: transform 0.12s ease, box-shadow 0.12s ease, border-color 0.12s ease, color 0.12s ease;
   }
 
   .btn-ghost:hover {
     border-color: var(--accent);
     color: var(--accent);
+    transform: translateY(-1px);
+    box-shadow: inset 0 1px 0 var(--glass-highlight), 0 4px 12px rgba(16, 24, 40, 0.12);
   }
 
   .btn-solid {
@@ -164,12 +223,21 @@ export const baseStyles = `
     font-weight: 600;
     font-size: 0.9rem;
     padding: 0.5rem 1rem;
-    border-radius: 8px;
-    background: var(--accent);
+    border-radius: 999px;
+    background: var(--glass-accent-bg);
     color: var(--accent-contrast);
+    border: 1px solid var(--glass-accent-border);
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.4), 0 4px 14px color-mix(in srgb, var(--accent) 35%, transparent);
+    transition: transform 0.12s ease, box-shadow 0.12s ease, background 0.12s ease;
   }
 
-  .btn-solid:hover { background: var(--accent-hover); }
+  .btn-solid:hover {
+    background: var(--accent-hover);
+    transform: translateY(-1px);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45), 0 6px 18px color-mix(in srgb, var(--accent) 45%, transparent);
+  }
 
   main {
     max-width: var(--page-width);
@@ -216,13 +284,33 @@ export const baseStyles = `
   }
 
   .card {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 14px;
+    position: relative;
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    border-radius: 16px;
     padding: 1.25rem;
-    box-shadow: var(--shadow);
+    box-shadow: var(--glass-shadow);
+    backdrop-filter: blur(var(--glass-blur)) saturate(1.5);
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.5);
     margin-bottom: 1.25rem;
     transition: transform 0.15s ease, box-shadow 0.15s ease;
+    overflow: hidden;
+  }
+
+  /* The specular highlight: a thin bright line along the top edge, the way
+     light catches the rim of real glass. A pseudo-element rather than a
+     border so it can fade rather than being a hard 1px line. */
+  .card::before {
+    content: "";
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--glass-highlight), transparent);
+  }
+
+  .card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 12px 36px rgba(16, 24, 40, 0.16);
   }
 
   .icon-chip {
@@ -291,9 +379,11 @@ export const baseStyles = `
     font: inherit;
     font-size: 1rem;
     padding: 0.6rem 0.7rem;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--bg);
+    border: 1px solid var(--glass-border);
+    border-radius: 10px;
+    background: var(--glass-bg-strong);
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
     color: var(--text);
     /* An <input> is inline-block by default and sizes to its own intrinsic
        width (~20 characters), not its container's --- fine when it's a
@@ -343,9 +433,11 @@ export const baseStyles = `
     font: inherit;
     font-size: 1rem;
     padding: 0.6rem 0.7rem;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--bg);
+    border: 1px solid var(--glass-border);
+    border-radius: 10px;
+    background: var(--glass-bg-strong);
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
     color: var(--text);
     width: 100%;
     resize: vertical;
@@ -385,7 +477,10 @@ export const baseStyles = `
     font-size: 0.9rem;
     padding: 0.3rem 0.6rem 0.3rem 0.3rem;
     border-radius: 999px;
-    border: 1px solid var(--border);
+    border: 1px solid var(--glass-border);
+    background: var(--glass-bg);
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
   }
 
   .user-chip:hover {
@@ -403,11 +498,13 @@ export const baseStyles = `
     display: flex;
     align-items: center;
     gap: 0.4rem;
-    background: var(--surface);
-    border: 1px solid var(--border);
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
     border-radius: 999px;
     padding: 0.25rem 0.6rem 0.25rem 0.25rem;
     font-size: 0.85rem;
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
   }
 
   .member-chip a {
@@ -509,9 +606,11 @@ export const baseStyles = `
     font: inherit;
     font-size: 1rem;
     padding: 0.6rem 0.7rem;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--bg);
+    border: 1px solid var(--glass-border);
+    border-radius: 10px;
+    background: var(--glass-bg-strong);
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
     color: var(--text);
   }
 
@@ -616,14 +715,22 @@ export const baseStyles = `
     font: inherit;
     font-weight: 600;
     padding: 0.65rem 1rem;
-    border: none;
-    border-radius: 8px;
-    background: var(--accent);
+    border: 1px solid var(--glass-accent-border);
+    border-radius: 999px;
+    background: var(--glass-accent-bg);
     color: var(--accent-contrast);
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.4), 0 4px 14px color-mix(in srgb, var(--accent) 35%, transparent);
     cursor: pointer;
+    transition: transform 0.12s ease, box-shadow 0.12s ease, background 0.12s ease;
   }
 
-  button:hover { background: var(--accent-hover); }
+  button:hover {
+    background: var(--accent-hover);
+    transform: translateY(-1px);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45), 0 6px 18px color-mix(in srgb, var(--accent) 45%, transparent);
+  }
 
   .code-chip {
     display: inline-block;
@@ -766,10 +873,12 @@ export const baseStyles = `
   }
 
   .mockup-window {
-    background: var(--surface);
-    border: 1px solid var(--border);
+    background: var(--glass-bg-strong);
+    border: 1px solid var(--glass-border);
     border-radius: 16px;
-    box-shadow: var(--shadow-lift);
+    box-shadow: var(--glass-shadow);
+    backdrop-filter: blur(var(--glass-blur)) saturate(1.5);
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.5);
     overflow: hidden;
     transform: rotate(-1.5deg);
     transition: transform 0.25s ease;
@@ -866,10 +975,12 @@ export const baseStyles = `
   }
 
   .step {
-    background: var(--surface);
-    border: 1px solid var(--border);
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
     border-radius: 14px;
     padding: 1.25rem;
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
     transition: transform 0.15s ease, box-shadow 0.15s ease;
   }
 
@@ -919,10 +1030,12 @@ export const baseStyles = `
   }
 
   .feature {
-    background: var(--surface);
-    border: 1px solid var(--border);
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
     border-radius: 14px;
     padding: 1.25rem;
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
     transition: transform 0.15s ease, box-shadow 0.15s ease;
   }
 
