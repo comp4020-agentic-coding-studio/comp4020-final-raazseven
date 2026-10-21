@@ -109,3 +109,77 @@ glass header all actually render, not just typecheck. Also re-ran
 `pnpm test` against the app on port 8080 (the suite's expected port per
 `spec/global-setup.ts`, not the `dev` script's 3000) --- 48/48 still green,
 confirming the CSS-only change didn't touch anything the spec checks.
+
+Separately this session: `--page-width` had plateaued at a fixed `72rem`
+from 1024px up, so any screen wider than that (1440px, 1920px) left a large,
+fixed empty gutter on both sides that never grew with the window --- replaced
+the three stepped breakpoints with `clamp(40rem, 90vw, 100rem)`, one fluid
+value instead. First pass (`min(100rem, 90vw)`, no floor) actually made
+phones *narrower* than before --- `90vw` alone reads as less than the full
+viewport there, stacking an unwanted second gutter on top of main's own
+padding. Caught by screenshotting phone width specifically, not just desktop,
+since the original bug report was about wide screens and it would have been
+easy to only check that end of the range; `clamp`'s floor fixed it without
+losing the wide-screen gain. Verified across phone/tablet/laptop/desktop
+widths with Playwright before and after, plus `pnpm typecheck` and the full
+`pnpm test` suite green throughout.
+
+## 2026-10-21
+
+Built live mini-game challenges (Tic-Tac-Toe and Rock-Paper-Scissors,
+`decisions/0004-mini-game-challenges.md`) after discussing the idea
+yesterday as a low-priority "if possible" addition. Deliberately reused
+existing infrastructure rather than adding new machinery: a finished game's
+outcome logs through the existing `addResult()` (`src/db.ts`) exactly like
+any manually-logged result, no schema change at all; a per-game live board
+channel is just another key in `src/live.ts`'s existing `subscribe`/
+`broadcast` `Map`, widened by one additive `LiveEvent` type (`"board"`).
+
+Design decision worth remembering: Rock-Paper-Scissors needs a player's
+choice to stay hidden from their opponent until both have chosen, or the
+second player could simply wait for a live update revealing the first
+player's pick before choosing themselves. Because this app's broadcast
+mechanism has no concept of a per-recipient payload (every existing
+broadcast fragment is viewer-agnostic by construction), the fix wasn't to
+add per-viewer broadcast plumbing --- it was to defer broadcasting on the
+per-game channel entirely until *both* choices are in, with each player's
+own page load privately rendering only their own pending choice in the
+meantime. Tic-Tac-Toe has no hidden information, so it broadcasts after
+every move instead, same as `resultsListFragment` always has.
+
+Direct application of this repo's own real-time standing rule
+(`CLAUDE.md`): a mini-game win also broadcasts on the *group's* existing
+results channel (`{ type: "result", ... }`), the same broadcast
+`POST /g/:code/results` already sends, specifically so a result logged
+through a new code path doesn't silently skip the crit-9 broadcast a
+manually-logged result gets. Wrote a dedicated test
+(`spec/minigames.test.ts`) opening the group's own `/events` stream before
+playing a winning move, asserting `event: result` arrives there --- not just
+that the page re-render looks right afterward.
+
+Gotcha hit, in the test suite itself, not the app: an SSE-reading test
+helper (`readUntil`) that races a bare `reader.read()` against a timeout
+silently abandons that read() when the timeout wins --- if real data then
+arrives *after* the timeout but *before* a second call starts its own
+`read()`, the still-pending abandoned call consumes it first, and the
+assertion that should have seen it finds nothing. Looked like the app wasn't
+broadcasting at all; manually replaying the exact same request sequence by
+hand with raw `fetch()` against the dev server showed the server-sent event
+arriving fine, which placed the bug in the test's own stream-reading logic,
+not the route. Fixed by pumping one stream continuously into a single shared
+buffer from the moment it opens (`pumpStream()`), with `readUntil()` only
+ever polling that already-filled buffer rather than racing `read()` calls
+against each other --- there is then always at most one `read()` in flight,
+never one left abandoned mid-call. Lesson, same shape as last session's
+test-suite gotcha: a failing assertion against a live, concurrent system is
+not automatically a server bug just because the server is the more complex
+of the two things being tested.
+
+Verified with real two-browser-context Playwright sessions (not just the
+spec suite): two signed-in users playing a full Tic-Tac-Toe game to a win
+with each tab's board updating live without a reload, a third, separate
+browser context watching the group page see the win land in the live
+results feed without a reload, and a Rock-Paper-Scissors round confirming
+visually that neither player's pending choice is ever shown to the other
+before both have chosen. `pnpm typecheck` and the full `pnpm test` suite
+(58/58, 48 pre-existing + 10 new) green throughout.
