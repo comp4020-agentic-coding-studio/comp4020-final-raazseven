@@ -43,6 +43,8 @@ import {
   validateAvatarUpload,
 } from "./avatars.ts";
 import {
+  gameBoardFragment,
+  gamePage,
   groupMatchesFragment,
   groupPage,
   homePage,
@@ -56,6 +58,7 @@ import {
 } from "./pages.ts";
 import { renderReadme } from "./readme.ts";
 import { broadcast, subscribe } from "./live.ts";
+import { applyMove, channelFor, createChallenge, GAME_NAMES, getSession, type GameKind } from "./minigames.ts";
 
 const app = Fastify({ logger: true });
 await app.register(formbody);
@@ -109,7 +112,13 @@ function safeNext(raw: string | undefined, fallback: string): string {
 function renderGroupPage(
   group: Group,
   user: User | undefined,
-  errors: { resultError?: string; matchError?: string; avatarError?: string; profileError?: string } = {},
+  errors: {
+    resultError?: string;
+    matchError?: string;
+    avatarError?: string;
+    profileError?: string;
+    challengeError?: string;
+  } = {},
 ): string {
   const membership = user ? membershipFor(user.id, group.id) : undefined;
   return groupPage(
@@ -124,6 +133,7 @@ function renderGroupPage(
     errors.matchError,
     errors.avatarError,
     errors.profileError,
+    errors.challengeError,
   );
 }
 
@@ -585,6 +595,157 @@ app.post<{ Params: { code: string; userId: string } }>("/g/:code/members/:userId
   }
   reply.redirect(`/g/${group.code}`, 303);
 });
+
+/** Resolves and validates a mini-game session for `/g/:code/games/:id...`
+ * routes in one place --- every route below needs the same 404s (no such
+ * group, no such session, or a session that belongs to a different group
+ * than the one in the URL) before it can do anything else. */
+function requireGameSession(
+  code: string,
+  id: string,
+): { group: Group; session: ReturnType<typeof getSession> } | undefined {
+  const group = getGroupByCode(code.toUpperCase());
+  if (!group) return undefined;
+  const session = getSession(id);
+  if (!session || session.groupId !== group.id) return undefined;
+  return { group, session };
+}
+
+function gamePlayers(session: NonNullable<ReturnType<typeof getSession>>): [User, User] {
+  const [a, b] = session.playerIds;
+  const playerA = getUserById(a);
+  const playerB = getUserById(b);
+  if (!playerA || !playerB) throw new Error("a mini-game session referenced a user that no longer exists");
+  return [playerA, playerB];
+}
+
+app.post<{ Params: { code: string }; Body: { opponentId: string; game: GameKind } }>(
+  "/g/:code/games",
+  async (req, reply) => {
+    const group = getGroupByCode(req.params.code.toUpperCase());
+    if (!group) return reply.code(404).send("no group with that code");
+
+    const user = currentUser(req);
+    const membership = user ? membershipFor(user.id, group.id) : undefined;
+    if (!user || !membership) return reply.type("text/html").send(renderGroupPage(group, user));
+
+    const opponentId = Number(req.body.opponentId);
+    const game = req.body.game;
+    const opponent = Number.isInteger(opponentId) ? memberInGroup(group.id, opponentId) : undefined;
+
+    if (game !== "tic-tac-toe" && game !== "rock-paper-scissors") {
+      return reply
+        .type("text/html")
+        .send(renderGroupPage(group, user, { challengeError: "pick a game to play" }));
+    }
+    if (!opponent || opponent.id === user.id) {
+      return reply.type("text/html").send(
+        renderGroupPage(group, user, { challengeError: "pick another member of this group to challenge" }),
+      );
+    }
+
+    const session = createChallenge(group.id, game, user.id, opponent.id);
+    record(
+      req,
+      user.id,
+      "minigame.challenge",
+      group.id,
+      `"${user.name}" challenged "${opponent.name}" to ${GAME_NAMES[game]} in "${group.name}"`,
+    );
+    reply.redirect(`/g/${group.code}/games/${session.id}`, 303);
+  },
+);
+
+app.get<{ Params: { code: string; id: string } }>("/g/:code/games/:id", async (req, reply) => {
+  const found = requireGameSession(req.params.code, req.params.id);
+  if (!found) return reply.code(404).send("no such game");
+  const { group, session } = found;
+  const viewer = currentUser(req);
+  reply.type("text/html").send(gamePage(group, session!, gamePlayers(session!), viewer));
+});
+
+// Server-sent events for one mini-game's board --- identical shape to
+// GET /g/:code/events, just scoped to the game's own channel
+// (src/minigames.ts's channelFor()) instead of the group's.
+app.get<{ Params: { code: string; id: string } }>("/g/:code/games/:id/events", async (req, reply) => {
+  const found = requireGameSession(req.params.code, req.params.id);
+  if (!found) return reply.code(404).send("no such game");
+
+  reply.raw.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+  reply.raw.write(": connected\n\n");
+
+  const heartbeat = setInterval(() => reply.raw.write(": keep-alive\n\n"), 25_000);
+  const unsubscribe = subscribe(channelFor(req.params.id), (event) => {
+    reply.raw.write(sseLine(event.type, event.html));
+  });
+  req.raw.on("close", () => {
+    clearInterval(heartbeat);
+    unsubscribe();
+  });
+
+  reply.hijack();
+});
+
+app.post<{ Params: { code: string; id: string }; Body: { cell?: string; choice?: string } }>(
+  "/g/:code/games/:id/move",
+  async (req, reply) => {
+    const found = requireGameSession(req.params.code, req.params.id);
+    if (!found) return reply.code(404).send("no such game");
+    const { group, session } = found;
+
+    const user = currentUser(req);
+    if (!user) {
+      return reply
+        .type("text/html")
+        .send(gamePage(group, session!, gamePlayers(session!), undefined, "you need to be signed in to play"));
+    }
+
+    const move =
+      session!.game === "tic-tac-toe"
+        ? { cell: Number(req.body.cell) }
+        : { choice: req.body.choice as "rock" | "paper" | "scissors" };
+    const result = applyMove(session!.id, user.id, move);
+    if (!result.ok) {
+      return reply.type("text/html").send(gamePage(group, session!, gamePlayers(session!), user, result.error));
+    }
+
+    const players = gamePlayers(result.session);
+    const gameName = GAME_NAMES[result.session.game];
+
+    // Rock-Paper-Scissors only reveals once both players have chosen
+    // (result.justFinished) --- broadcasting after just one choice would
+    // leak it to the second player before they pick. Tic-Tac-Toe has no
+    // hidden information, so it always broadcasts.
+    if (result.session.game === "tic-tac-toe" || result.justFinished) {
+      broadcast(channelFor(session!.id), {
+        type: "board",
+        html: gameBoardFragment(result.session, players, undefined, `/g/${group.code}/games/${session!.id}/move`),
+      });
+    }
+
+    if (result.justFinished && !result.session.isDraw && result.session.winnerId !== null) {
+      const winnerId = result.session.winnerId;
+      const loserId = result.session.playerIds.find((id) => id !== winnerId)!;
+      const winner = getUserById(winnerId)!;
+      const loser = getUserById(loserId)!;
+      addResult(group.id, gameName, [winnerId], [loserId]);
+      record(
+        req,
+        user.id,
+        "minigame.result",
+        group.id,
+        `"${winner.name}" beat "${loser.name}" at ${gameName} in "${group.name}"`,
+      );
+      broadcast(group.code, { type: "result", html: resultsListFragment(group, resultsForGroup(group.id)) });
+    }
+
+    reply.redirect(`/g/${group.code}/games/${session!.id}`, 303);
+  },
+);
 
 app.get<{ Params: { id: string } }>("/u/:id", async (req, reply) => {
   const viewer = currentUser(req);

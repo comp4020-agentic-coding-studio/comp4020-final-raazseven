@@ -6,7 +6,9 @@
 // See decisions/0001-live-update-scope.md for *what* gets broadcast and why.
 
 export interface LiveEvent {
-  type: "result" | "group-match" | "member";
+  // "board" is a mini-game's board state (src/minigames.ts), broadcast on
+  // its own per-game channel (channelFor()) rather than a group's channel.
+  type: "result" | "group-match" | "member" | "board";
   html: string;
 }
 

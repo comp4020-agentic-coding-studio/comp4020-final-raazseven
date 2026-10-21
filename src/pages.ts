@@ -2,6 +2,7 @@ import type { Group, GroupMatch, MemberWithRole, MembershipWithGroup, Result, Ro
 import { getGroupById, participantsForResult } from "./db.ts";
 import { curatedTagsByCategory } from "./db.ts";
 import { baseStyles, iconChip, logoMark, siteHeader } from "./styles.ts";
+import { GAME_NAMES, type MinigameSession, type RockPaperScissorsState, type TicTacToeState } from "./minigames.ts";
 
 function escapeHtml(s: string): string {
   return s
@@ -506,6 +507,188 @@ const liveScript = (code: string) => `
 })();
 `;
 
+/** The inner `<option>`s for "who do you want to challenge" --- every member
+ * except the viewer themselves (challenging yourself isn't a game). */
+function opponentOptionsFragment(members: MemberWithRole[], viewerId: number): string {
+  const options = members
+    .filter((m) => m.id !== viewerId)
+    .map((m) => `<option value="${m.id}">${escapeHtml(m.name)}</option>`)
+    .join("\n");
+  return `<option value="" disabled selected>choose an opponent</option>${options}`;
+}
+
+/** The "challenge someone to a mini-game" card (decisions/0004) --- sits
+ * alongside the log-result/log-match/edit-profile cards in
+ * .group-layout-actions. Only shown to a signed-in member, the same gate
+ * logResultCard already uses, since a challenge is itself a kind of result
+ * waiting to happen. */
+function minigameChallengeCard(code: string, members: MemberWithRole[], user: User, challengeError?: string): string {
+  const otherMembers = members.filter((m) => m.id !== user.id);
+  if (otherMembers.length === 0) {
+    return `<div class="card">
+      <h2 style="margin-top:0">Challenge someone to a mini-game</h2>
+      <p class="empty">No one else has joined this group yet.</p>
+    </div>`;
+  }
+  return `<div class="card">
+    <h2 style="margin-top:0">Challenge someone to a mini-game</h2>
+    ${challengeError ? `<p class="error-text">${escapeHtml(challengeError)}</p>` : ""}
+    <form method="post" action="/g/${code}/games">
+      <label for="opponent-select">Opponent</label>
+      <select id="opponent-select" name="opponentId" required>${opponentOptionsFragment(members, user.id)}</select>
+      <label for="minigame-select">Game</label>
+      <select id="minigame-select" name="game" required>
+        <option value="tic-tac-toe">Tic-Tac-Toe</option>
+        <option value="rock-paper-scissors">Rock-Paper-Scissors</option>
+      </select>
+      <button type="submit">Start challenge</button>
+    </form>
+  </div>`;
+}
+
+/** A Tic-Tac-Toe board has no hidden information --- every viewer (either
+ * player, or a third member just watching the group page) sees the exact
+ * same thing, the same way resultsListFragment() is viewer-agnostic. Every
+ * empty cell renders as its own one-click form regardless of whose turn it
+ * actually is; an off-turn click is rejected server-side (src/minigames.ts's
+ * applyMove), the same client-renders-the-affordance,
+ * server-re-checks-the-rule pattern the owner-only "Remove" button already
+ * uses. */
+function ticTacToeBoardHtml(session: MinigameSession, players: [User, User], moveUrl: string): string {
+  const state = session.state as TicTacToeState;
+  const [challenger, opponent] = players;
+  const markFor = (userId: number): Mark => (session.playerIds[0] === userId ? "X" : "O");
+
+  const cells = state.board
+    .map((cell, i) => {
+      if (cell) return `<div class="ttt-cell ttt-cell-filled">${cell}</div>`;
+      if (session.status !== "active") return `<div class="ttt-cell"></div>`;
+      return `<form method="post" action="${moveUrl}" style="margin:0">
+        <input type="hidden" name="cell" value="${i}" />
+        <button type="submit" class="ttt-cell" aria-label="play cell ${i + 1}"></button>
+      </form>`;
+    })
+    .join("");
+
+  let status: string;
+  if (session.status === "finished") {
+    status = session.isDraw
+      ? "It's a draw."
+      : `${escapeHtml(session.winnerId === challenger.id ? challenger.name : opponent.name)} wins!`;
+  } else {
+    const turnUser = state.turn === markFor(challenger.id) ? challenger : opponent;
+    status = `${escapeHtml(turnUser.name)}'s turn (${state.turn})`;
+  }
+
+  return `<p class="lede" style="margin-top:0">${status}</p>
+    <div class="ttt-board">${cells}</div>`;
+}
+
+type Mark = "X" | "O";
+
+/** Rock-Paper-Scissors has hidden information: a player's choice can't be
+ * shown to their opponent until both have chosen, or the second player could
+ * simply wait for a live update revealing the first player's pick. While the
+ * round is still active this only ever reveals `viewerId`'s own choice (or
+ * nothing, from a third member just watching); `viewerId` is unused, and
+ * both choices are shown, once the round is finished --- by then the
+ * revealed state is identical and safe for everyone, which is also exactly
+ * the moment src/server.ts actually broadcasts it (see applyMove's
+ * `justFinished`). */
+function rpsBoardHtml(session: MinigameSession, players: [User, User], viewerId: number | undefined, moveUrl: string): string {
+  const state = session.state as RockPaperScissorsState;
+  const [challenger, opponent] = players;
+
+  if (session.status === "finished") {
+    const choiceFor = (userId: number) => state.choices[userId]!;
+    const status = session.isDraw
+      ? `Both chose ${escapeHtml(choiceFor(challenger.id))} --- it's a draw.`
+      : `${escapeHtml(session.winnerId === challenger.id ? challenger.name : opponent.name)} wins!`;
+    return `<p class="lede" style="margin-top:0">${status}</p>
+      <div class="rps-reveal">
+        <p>${escapeHtml(challenger.name)} chose <strong>${escapeHtml(choiceFor(challenger.id))}</strong></p>
+        <p>${escapeHtml(opponent.name)} chose <strong>${escapeHtml(choiceFor(opponent.id))}</strong></p>
+      </div>`;
+  }
+
+  const viewerHasChosen = viewerId !== undefined && state.choices[viewerId] !== undefined;
+  const viewerIsPlayer = viewerId !== undefined && session.playerIds.includes(viewerId);
+
+  if (!viewerIsPlayer) {
+    return `<p class="lede" style="margin-top:0">Waiting for both players to choose --- choices stay hidden until the round ends.</p>`;
+  }
+  if (viewerHasChosen) {
+    return `<p class="lede" style="margin-top:0">You chose <strong>${escapeHtml(state.choices[viewerId!]!)}</strong>. Waiting for the other player...</p>`;
+  }
+  return `<p class="lede" style="margin-top:0">Pick one:</p>
+    <form method="post" action="${moveUrl}" class="rps-choices">
+      <button type="submit" name="choice" value="rock">Rock</button>
+      <button type="submit" name="choice" value="paper">Paper</button>
+      <button type="submit" name="choice" value="scissors">Scissors</button>
+    </form>`;
+}
+
+/** The inner markup of `#game-board` --- also what a live "board" event re-sends. */
+export function gameBoardFragment(
+  session: MinigameSession,
+  players: [User, User],
+  viewerId: number | undefined,
+  moveUrl: string,
+): string {
+  return session.game === "tic-tac-toe"
+    ? ticTacToeBoardHtml(session, players, moveUrl)
+    : rpsBoardHtml(session, players, viewerId, moveUrl);
+}
+
+/** Parallel to liveScript() above, but scoped to one game's own SSE channel
+ * (src/minigames.ts's channelFor()) rather than the group's --- a "board"
+ * event just swaps #game-board wholesale, since every board renderer above
+ * already produces the complete inner markup each time. */
+const gameLiveScript = (code: string, gameId: string) => `
+(function () {
+  var source = new EventSource(${JSON.stringify(`/g/${encodeURIComponent(code)}/games/${encodeURIComponent(gameId)}/events`)});
+  source.addEventListener("board", function (e) {
+    var el = document.getElementById("game-board");
+    if (el) el.innerHTML = e.data;
+  });
+})();
+`;
+
+/** One mini-game's own page --- the two players, the board, and a link back
+ * to the group. `viewer` decides what the board shows (rpsBoardHtml's hidden
+ * choice), not who's allowed to see the page at all: a third member watching
+ * is fine, the same way the group page itself is visible to anyone. */
+export function gamePage(
+  group: Group,
+  session: MinigameSession,
+  players: [User, User],
+  viewer: User | undefined,
+  moveError?: string,
+): string {
+  const code = escapeHtml(group.code);
+  const [challenger, opponent] = players;
+  const moveUrl = `/g/${code}/games/${encodeURIComponent(session.id)}/move`;
+
+  return layout(
+    `${GAME_NAMES[session.game]} --- ${group.name}`,
+    `<a class="back-link" href="/g/${code}">← Back to ${escapeHtml(group.name)}</a>
+    <h1 style="margin-bottom:0.25rem">${escapeHtml(GAME_NAMES[session.game])}</h1>
+    <div class="profile-header" style="margin-top:0.5rem">
+      ${avatarImg(userAvatarUrl(challenger.id), challenger.name, "sm")}
+      <strong>${escapeHtml(challenger.name)}</strong>
+      <span class="lede" style="margin:0">vs</span>
+      ${avatarImg(userAvatarUrl(opponent.id), opponent.name, "sm")}
+      <strong>${escapeHtml(opponent.name)}</strong>
+    </div>
+    <div class="card">
+      ${moveError ? `<p class="error-text">${escapeHtml(moveError)}</p>` : ""}
+      <div id="game-board">${gameBoardFragment(session, players, viewer?.id, moveUrl)}</div>
+    </div>`,
+    gameLiveScript(group.code, session.id),
+    viewer,
+  );
+}
+
 export function groupPage(
   group: Group,
   results: Result[],
@@ -518,6 +701,7 @@ export function groupPage(
   matchError?: string,
   avatarError?: string,
   profileError?: string,
+  challengeError?: string,
 ): string {
   const code = escapeHtml(group.code);
   const memberOptions = memberOptionsFragment(members);
@@ -607,6 +791,8 @@ export function groupPage(
       </div>`
     : "";
 
+  const minigameCard = isMember && user ? minigameChallengeCard(code, members, user, challengeError) : "";
+
   const { tagIds: currentTagIds, customTags: currentCustomTags } = splitGroupTags(groupTags);
   const editProfileCard = isOwner
     ? `<div class="card">
@@ -648,6 +834,7 @@ export function groupPage(
       <div class="group-layout-actions">
         ${joinOrAuthCard}
         ${logResultCard}
+        ${minigameCard}
         ${groupMatchCard}
         ${editProfileCard}
       </div>

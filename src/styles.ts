@@ -1090,6 +1090,56 @@ export const baseStyles = `
   .back-link:hover {
     color: var(--accent);
   }
+
+  /* A 3x3 Tic-Tac-Toe board --- each cell is either a static filled square or
+     a tiny one-cell <form>'s submit button (so a move is a plain
+     POST/redirect, consistent with every other mutating action in this app,
+     not a JS click handler). minmax(0, 1fr) for the same reason .cards-row
+     uses it: three equal tracks that actually shrink to fit a narrow
+     sidebar column instead of overflowing it. */
+  .ttt-board {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.4rem;
+    max-width: 14rem;
+    margin: 0.5rem 0;
+  }
+
+  .ttt-board form {
+    display: contents;
+  }
+
+  .ttt-cell {
+    aspect-ratio: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--font-display);
+    font-size: 1.75rem;
+    font-weight: 800;
+    border-radius: 10px;
+  }
+
+  /* An empty, clickable cell is a <button> --- reuses the app's one glass
+     button look rather than inventing a second button style just for this
+     board. A filled cell is plain markup (not a button at all), styled to
+     match but visually flatter since it's no longer interactive. */
+  div.ttt-cell.ttt-cell-filled {
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    color: var(--text);
+    cursor: default;
+  }
+
+  .rps-choices {
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  .rps-reveal p {
+    margin: 0.25rem 0;
+  }
 `;
 
 /** A deterministic, theme-independent mark --- app icons stay the same
