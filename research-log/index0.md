@@ -240,3 +240,57 @@ process was running DB_PATH-pointed at the same file before trusting a
 `readonly database` error as a real finding, since a stray second process
 holding the same SQLite file open was the actual cause the first time the
 suite failed, not a bug in the new code.
+
+## 2026-10-23
+
+Asked directly whether it's good that anyone can log any result against
+anyone else, with no confirmation from the people actually named — a
+question about the app's own design, not a bug report. Worked the question
+by reading the actual route (`POST /g/:code/results`, `src/server.ts`)
+rather than guessing: confirmed the optional witness
+(`decisions/0005-witness-confirmation.md`) is the *only* confirmation
+mechanism that exists, and it's an opt-in third party, not the winner/loser
+themselves. Found a second, sharper gap while auditing: `results` has no
+`logged_by_user_id` column at all — `group_matches` already tracks who
+logged a match, `results` never got the equivalent, so there was no
+attribution anywhere, only a write-only `audit_log` row nothing ever reads
+back to a user.
+
+Wrote `decisions/0006-named-party-disputes-and-logger-attribution.md` before
+touching any code, listing every edge case found by actually reading the
+route rather than assuming (optional witness, collusion between two members
+against a third, no attribution shown, team results widening the blast
+radius) and naming two gaps found but deliberately left open (group-vs-group
+matches have no witness/dispute mechanism at all; no edit path means an
+honest typo looks identical to a fabrication once disputed) — same pattern
+as 0004 and 0005, scoping the change rather than fixing everything the audit
+turned up in one pass.
+
+Implementation: `results.logged_by_user_id` (additive column, shown on every
+row from now on) plus a new `result_disputes` table (one append-only row per
+person who disputes, `UNIQUE(result_id, disputed_by_user_id)` so a repeat
+dispute from the same person is a no-op rather than a second row). Unlike
+witness confirm/deny (a one-shot decision between two states), a dispute has
+no resolution step at all — it's a running count ("disputed by N of M named
+participants"), and the person who logged a result can't dispute their own
+submission even if they also named themselves a winner. Both `addResult()`
+call sites (the manual-log route and the mini-game auto-log route) now pass
+`loggedByUserId`, so the dispute mechanism and the attribution line both
+apply to mini-game results for free, the same way witness confirmation's
+schema change did.
+
+Gotcha hit while writing the new tests: the first draft of "a bystander
+can't dispute" and "the logger can't dispute their own result" tests tried
+to read a result's id off a page view where the dispute form doesn't
+actually render for that viewer (a bystander, or the logger themselves) —
+there's nothing to scrape. Fixed by always resolving the result id from a
+view where the form *does* render (an eligible participant's), then
+attempting the disputed action as whichever ineligible viewer the test
+actually wants to check, against that same known id. Also caught, before it
+shipped: an early version assumed a fresh group's one result would have id
+`1` — wrong, since result ids are global across every group sharing the test
+server/database, not per-group.
+
+Verified: `pnpm typecheck` clean, and the full suite (72/72, 64 pre-existing
++ 8 new in `spec/result-disputes.test.ts`) green against a single confirmed
+server process.
