@@ -4,98 +4,119 @@
 
 [`comp4020-final-raazseven`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven)
 is a scorekeeper for friend groups: create a group, get a code, log who beat
-who at whatever you play. Each crit added one literal requirement: crit 8
-was proof of life (a stranger's trace survives, as them), crit 9 was proof
-of life *together* (real-time, with a decision about concurrent use), crit
-10 is proof the app tells people apart with that decision checked on the
-server and logged durably. The same question recurs each week: what does
-the spec's wording actually require, once taken literally?
+who at whatever you play. Each crit added one literal requirement — crit 8
+was proof of life (a stranger's trace survives, as them), crit 9 was proof of
+life *together* (real-time, with a concurrency decision), crit 10 was proof
+the app tells people apart, checked server-side and logged durably. All three
+crits are now done; this is the final-project snapshot, written after the
+cutoff for crit 10 and the agentic-development work that continued past it.
+The question that recurred every week, crit or not, stayed the same: what
+does a line actually require once taken literally, not approximately?
 
 ## Stack: Node + TypeScript direct, Fastify, node:sqlite
 
-The Dockerfile and `fly.toml` record the decision as built. The trade-off:
-the course's Fly setup gives the app one 256MB machine and one volume, and
-the bar is "deployed and alive," not "scales." Node runs TypeScript
-directly, Fastify is a few dependencies, `node:sqlite` is built in — no
-native module to compile, no separate database service. That choice has
-held for three crits without changing: crit 9 added one small dependency
-(`@fastify/multipart`) and one file (`src/live.ts`, in-memory pub-sub); crit
-10 added no infrastructure at all, only schema and routes.
+The Dockerfile and `fly.toml` record the decision as built. The course's Fly
+setup gives the app one 256MB machine and one volume; the bar is "deployed
+and alive," not "scales." Node runs TypeScript directly, Fastify is a few
+dependencies, `node:sqlite` is built in — no native module to compile, no
+separate database service. The choice has held across every session since:
+crit 9 added one dependency (`@fastify/multipart`, for avatar uploads) and
+one new file (`src/live.ts`, an in-memory SSE pub-sub); crit 10, the UI
+passes, the mini-games, and the witness-confirmation work below each added
+schema and routes but no new infrastructure at all.
 
-## Crit 8 and 9, briefly
+## Crits 8–10
 
 Crit 8
 ([`1c9b90a`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/1c9b90a))
-added real accounts (scrypt password hash, rotating session token) after
-re-reading "find their trace still there... as them" and noticing anyone
-could log a result as anyone else. Crit 9 added membership-gated results,
-avatars, group-vs-group matches, and real-time SSE as one plan rather than
-four tickets, because gating logging to real members made a newly-joined
-member invisible in open forms until real-time fixed it too —
-[`decisions/0001-live-update-scope.md`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/blob/main/decisions/0001-live-update-scope.md)
-records what broadcasts and why. Mid-crit-9, per-group accounts were
-reversed for global accounts, roles, and a dashboard
-([`decisions/0002-global-accounts.md`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/blob/main/decisions/0002-global-accounts.md),
-[`b90154f`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/b90154f)),
-a direct reversal of a choice `README.md` had called deliberate — migrated
-in place (`members` kept as the migration source, never dropped), deployed
-against live data, and re-verified by hand against the production URL
-afterward, not assumed from green tests alone.
+added real accounts after noticing "find their trace... as them" meant
+anyone could log a result as anyone else on the honour-system first pass.
+Crit 9
+([`b90154f`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/b90154f),
+[`decisions/0001`](decisions/0001-live-update-scope.md),
+[`decisions/0002`](decisions/0002-global-accounts.md)) added
+membership-gated results, avatars, group matches, and real-time SSE as one
+plan, then reversed per-group accounts for global ones mid-crit once that
+model stopped surviving contact with how people actually use the app. Crit
+10
+([`121ed6c`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/121ed6c),
+[`decisions/0003`](decisions/0003-team-results-and-profile-visibility.md))
+added team results and per-person profiles, gated by the *viewer's* current
+membership rather than the target's — the server-checked permission
+decision the crit asked for — plus durable `audit_log` rows alongside the
+live request log. Each crit's own reflection
+(`reflections/crit-8.md`–`crit-10.md`) has the breakthrough and the mistake
+that shaped it; not restated here.
 
-## Crit 10: team results, profiles, and durable logging
+## Since crit 10: finishing the final project
 
-Crit 10 asks for three things together: multi-user distinguishability
-(already true from crit 9's global accounts), a server-checked permission
-decision written down with why, and server-side logging that outlives the
-crit itself.
+Three rounds of work landed after crit 10's cutoff, continuing the same app
+toward the final submission rather than starting a new feature set:
 
-**Team results.** A result's winner/loser side was exactly one person each.
-A new `result_participants` table
-([`121ed6c`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/121ed6c))
-holds one row per person per side, any number per side, backfilled
-idempotently from existing results. The original `winner`/`loser` text
-columns and `winner_user_id`/`loser_user_id` keep storing the first
-name/id per side unchanged, so every pre-existing render path and test
-still works for a plain 1v1 — the new table is the full roster only once a
-side has more than one person. The log-result form's selects became
-`<select multiple>`.
+**A visual pass**
+([`2a7a16b`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/2a7a16b),
+[`a841a4e`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/a841a4e)):
+a "liquid glass" look built entirely from CSS custom properties
+(`--glass-bg`, `--glass-blur`, etc.) layered onto the existing light/dark
+tokens, with a `prefers-reduced-transparency` fallback to a plain opaque
+surface rather than an invisible one; and a fluid `--page-width`
+(`clamp(40rem, 90vw, 100rem)`) replacing three fixed breakpoints that left a
+static empty gutter on anything wider than 1024px.
 
-**Profiles, and the permission decision.** A new `GET /u/:id` page shows a
-person's head-to-head and teamed-up history with the viewer. The decision,
-recorded in
-[`decisions/0003-team-results-and-profile-visibility.md`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/blob/main/decisions/0003-team-results-and-profile-visibility.md):
-visibility is gated by the *viewer's own current* group membership, not the
-target's, checked server-side before any result row is read. I'd first
-assumed the natural framing was gating by the target's membership ("can
-they let me see this"), but every other permission check in this app —
-logging a result against a current member, a removed member disappearing
-live — is about who the *acting* person currently is, not a frozen fact.
-Gating by the target's membership would mean leaving a group never actually
-revokes anything for someone still in it; gating by the viewer's own
-membership means it does, the next time the query runs. The named cost: a
-viewer who leaves every shared group with someone loses their own view of
-real past history, not just the other person's.
+**Live mini-game challenges**
+([`48afeca`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/48afeca),
+[`decisions/0004`](decisions/0004-mini-game-challenges.md)): Tic-Tac-Toe and
+Rock-Paper-Scissors, written from scratch (license reasons) rather than
+pulled from an existing repo. A finished game logs through the *existing*
+`addResult()`, no schema change — deliberately reusing this app's trust-based
+logging model rather than adding an invite/accept step. Rock-Paper-Scissors
+needed one real design decision: a player's choice can't broadcast until
+*both* have chosen, since this app's SSE fragments are viewer-agnostic by
+construction and a second player could otherwise just wait for the live
+update before picking.
 
-**Durable logging.** Crit 10 distinguishes two needs: narration at the crit
-(`flyctl logs`, live, with a finite buffer) and a record that outlives it. A
-`record()` helper in `src/server.ts` writes both from one call site — a
-structured Fastify log line and an `audit_log` SQLite row — at every
-mutating route, so the two can't drift apart.
+**Witness confirmation**
+([`4ec0c83`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/4ec0c83),
+[`decisions/0005`](decisions/0005-witness-confirmation.md)): `README.md` had
+named this as deliberately deferred since crit 8 ("logged on trust... next
+week's build"). A manually-logged result can now optionally name a third
+group member as a witness, who confirms or denies it; denial marks the
+result disputed rather than removing it. Scoped to manual logging only —
+mini-game and group-match auto-logs still log on trust, an explicit scope
+cut recorded in the ADR, not an oversight.
 
-**A real mistake, caught by the test suite, not by care.** Generalizing the
-single-id membership check to a set check, I also changed both error
-messages' wording without checking `spec/scorekeeping.test.ts` asserted the
-originals verbatim — it did, and two previously-green tests broke. The code
-was correct; the strings are part of the spec's own contract. Caught by
-running the full suite before calling the work done, reverted to the
-original wording in the same pass.
+## Process discipline: corrections became rules, not one-off fixes
 
-**Verification, not assumption.** `pnpm check` is 48/48 clean as of
-[`121ed6c`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/121ed6c).
-After deploy, I confirmed the migration actually ran against production by
-SSH'ing into the live machine and checking `result_participants` and
-`audit_log` exist on `/data/app.db`, then re-opened the live SSE stream and
-watched a result logged from one request arrive on a second, independent
-connection — the same real-time check run after every deploy this course,
-because "this change is about results and profiles, not real-time" is
-exactly the kind of reasoning that's usually right and occasionally isn't.
+`CLAUDE.md`'s rules each trace to a real incident, not a guess at what might
+go wrong. The session-token rotation rule under Auth is crit 8's logout bug,
+where clearing the cookie client-side left a copied token still valid. The
+migration rules under Migrations (never drop a column, rebuild instead of
+relaxing `NOT NULL`, idempotent markers) are the global-accounts migration
+(`decisions/0002`) and the `group_matches` rebuild it required. The
+formbody-vs-multipart rule exists because signup, login, and the
+group-profile route were each built with manual multipart parsing once, for
+no file field any of them had. The real-time rule — check
+`spec/live-updates.test.ts`'s existing broadcast before changing how a
+result is created — is there because splitting global signup from
+group-join once silently dropped the `member` SSE event the old combined
+route used to send. The `uniqueName()` test rule and `vitest.config.ts`'s
+`fileParallelism: false` both came from one incident: making account names
+globally unique broke a dozen tests at once, all reporting as timeouts,
+which looked like a server regression until isolating one file separated
+the real bug (two spec files reusing the literal name "Priya") from
+parallelism noise.
+
+## Verification discipline
+
+`pnpm check` is 64/64 clean as of
+[`4ec0c83`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/4ec0c83)
+(58 pre-existing + 6 for witness confirmation). Every session this project
+has run has re-verified past what the test suite alone can show: SSH'ing
+into the live machine to confirm a migration actually landed on
+`/data/app.db`, re-opening the live SSE stream after a deploy that "wasn't
+about real-time" to watch a result still arrive on a second connection, and
+Playwright sessions across two real browser contexts to watch a mini-game
+board update live rather than trusting the render functions in isolation.
+`research-log/index0.md` is the running account of what each session
+actually tried, including the mistakes — this file is the current snapshot;
+that one is the history.
