@@ -183,3 +183,60 @@ results feed without a reload, and a Rock-Paper-Scissors round confirming
 visually that neither player's pending choice is ever shown to the other
 before both have chosen. `pnpm typecheck` and the full `pnpm test` suite
 (58/58, 48 pre-existing + 10 new) green throughout.
+
+## 2026-10-22
+
+Built witness confirmation for manually-logged results
+(`decisions/0005-witness-confirmation.md`), the feature `README.md` had
+named since crit 8 as deliberately deferred ("Confirmation by a third
+friend is next week's build"). Asked for: a third group member named as a
+mediator/witness on a result, who can then confirm or deny it.
+
+Research before writing any code: two parallel `Explore` subagents mapped
+(1) the existing mini-game auto-logging path and confirmed there was no
+witness/confirm/dispute concept anywhere in the codebase (`grep` across
+`src/`, `spec/`, `decisions/` came up empty except the README's own
+deferral note), and (2) the exact rendering/live-update/test plumbing
+(`resultsListFragment`, `liveScript`, `spec/live-updates.test.ts`'s
+`event: result` assertions) a new feature would have to slot into without
+breaking. Doing the research as two forked lookups first, before deciding
+the schema shape, avoided designing a parallel "pending results" table when
+two additive columns on the existing `results` table (`witness_user_id`,
+`witness_status`) did the job with less surface area — the ADR's "options
+considered" section records why the separate-table alternative was
+rejected.
+
+Design decision made with the person up front, by asking rather than
+guessing: witness is optional (not required on every result), scoped to
+manually-logged results only (not mini-game auto-logs or group-vs-group
+matches, which still log on trust, unchanged), and a denied result stays
+fully visible marked "disputed," never removed — consistent with
+`CLAUDE.md`'s "never drop a column or table" migration rule extended to
+mean never drop a *row* either, just because of a disagreement about it.
+
+Reused the existing group SSE channel rather than inventing a new
+`LiveEvent` type: a witness's confirm/deny re-broadcasts the exact same
+`{ type: "result", html: resultsListFragment(...) }` event a fresh result
+already sends, so `spec/live-updates.test.ts`'s existing assertions needed
+no changes at all — direct application of `CLAUDE.md`'s real-time standing
+rule to check an existing test's broadcast expectations before changing how
+a result's lifecycle works, this time by *not* having to touch that path.
+
+Gotcha hit, in a new test I wrote, not the app: asserted
+`expect(html).not.toContain("witness-pill")` to prove no witness badge
+renders when none was named, and it failed — because `"witness-pill"` is
+always present as a literal string in every page's `<style>` block (the CSS
+class definition itself), regardless of whether anything on the page
+actually uses that class. Fixed by asserting on the opening tag
+(`class="witness-pill`) instead of the bare class name. Same shape of
+mistake as last session's "two strings happened to collide" gotcha:
+checking that a substring appears is weaker than checking *where* it
+appears.
+
+Verified: `pnpm typecheck` clean, and the full `pnpm test` suite (64/64, 58
+pre-existing + 6 new in `spec/witness-confirmation.test.ts`) green against a
+single real server instance on port 8080 — confirmed only one server
+process was running DB_PATH-pointed at the same file before trusting a
+`readonly database` error as a real finding, since a stray second process
+holding the same SQLite file open was the actual cause the first time the
+suite failed, not a bug in the new code.
