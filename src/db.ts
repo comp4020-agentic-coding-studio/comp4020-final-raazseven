@@ -108,6 +108,20 @@ db.exec(`
     side TEXT NOT NULL CHECK (side IN ('winner', 'loser'))
   );
 
+  -- One row per named participant who disputes a result
+  -- (decisions/0006-named-party-disputes-and-logger-attribution.md) ---
+  -- append-only, same "never delete, never silently resolve" posture as a
+  -- witness's denial, extended to every winner/loser named in the result,
+  -- not just an optional witness. UNIQUE so the same person disputing twice
+  -- is a no-op, not a second row inflating the count.
+  CREATE TABLE IF NOT EXISTS result_disputes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    result_id INTEGER NOT NULL REFERENCES results(id),
+    disputed_by_user_id INTEGER NOT NULL REFERENCES users(id),
+    created_at TEXT NOT NULL,
+    UNIQUE(result_id, disputed_by_user_id)
+  );
+
   -- Who did what, server-side, kept forever (crit 10: "the logging outlives
   -- the crit") --- a durable companion to the request logger (src/server.ts's
   -- Fastify logger), which flyctl logs can tail live but doesn't retain past
@@ -266,6 +280,15 @@ if (!resultColumns.some((c) => c.name === "witness_user_id")) {
 }
 if (!resultColumns.some((c) => c.name === "witness_status")) {
   db.exec("ALTER TABLE results ADD COLUMN witness_status TEXT NOT NULL DEFAULT 'none'");
+}
+
+// Migration: logger attribution
+// (decisions/0006-named-party-disputes-and-logger-attribution.md) --- nullable
+// so a result logged before this column existed (or by code that predates
+// this change) simply shows no logger, same fallback every earlier nullable
+// column on this table already uses.
+if (!resultColumns.some((c) => c.name === "logged_by_user_id")) {
+  db.exec("ALTER TABLE results ADD COLUMN logged_by_user_id INTEGER REFERENCES users(id)");
 }
 
 // Migration: group_matches.logged_by_member_id was declared NOT NULL back
@@ -485,6 +508,7 @@ export interface Result {
   loser_user_id: number | null;
   witness_user_id: number | null;
   witness_status: WitnessStatus;
+  logged_by_user_id: number | null;
   created_at: string;
 }
 
@@ -558,6 +582,7 @@ export function addResult(
   winnerIds: number[],
   loserIds: number[],
   witnessId?: number,
+  loggedByUserId?: number,
 ): Result {
   const winners = winnerIds.map((id) => getUserById(id)!);
   const losers = loserIds.map((id) => getUserById(id)!);
@@ -567,8 +592,8 @@ export function addResult(
   const info = db
     .prepare(
       `INSERT INTO results
-        (group_id, game, winner, loser, winner_user_id, loser_user_id, witness_user_id, witness_status, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (group_id, game, winner, loser, winner_user_id, loser_user_id, witness_user_id, witness_status, logged_by_user_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       groupId,
@@ -579,6 +604,7 @@ export function addResult(
       loserIds[0],
       witnessId ?? null,
       witnessStatus,
+      loggedByUserId ?? null,
       new Date().toISOString(),
     );
   const resultId = info.lastInsertRowid as number;
@@ -615,6 +641,53 @@ export function setWitnessStatus(
   if (!result || result.witness_status !== "pending" || result.witness_user_id !== actingUserId) return undefined;
   db.prepare("UPDATE results SET witness_status = ? WHERE id = ?").run(status, resultId);
   return getResultById(resultId);
+}
+
+/** Every user id actually named on either side of a result --- the pool
+ * eligible to dispute it (decisions/0006), independent of whether a witness
+ * was ever named at all. */
+function participantUserIds(resultId: number): Set<number> {
+  const rows = db
+    .prepare("SELECT user_id FROM result_participants WHERE result_id = ?")
+    .all(resultId) as Array<{ user_id: number }>;
+  return new Set(rows.map((r) => r.user_id));
+}
+
+/** Records `userId` disputing a result they were named a winner or loser
+ * in --- append-only (decisions/0006), same "never delete, never silently
+ * resolve" posture as a witness's denial, just not limited to one witness or
+ * one decision. `UNIQUE(result_id, disputed_by_user_id)` makes a repeat
+ * dispute from the same person a no-op rather than a second row. Returns
+ * `false` without writing anything if `userId` wasn't actually named on
+ * either side, or logged the result themselves --- both checked here, not
+ * just by the caller, so this is safe to call on its own. */
+export function addResultDispute(resultId: number, userId: number): boolean {
+  const result = getResultById(resultId);
+  if (!result) return false;
+  if (result.logged_by_user_id === userId) return false;
+  if (!participantUserIds(resultId).has(userId)) return false;
+  db.prepare(
+    "INSERT OR IGNORE INTO result_disputes (result_id, disputed_by_user_id, created_at) VALUES (?, ?, ?)",
+  ).run(resultId, userId, new Date().toISOString());
+  return true;
+}
+
+export interface ResultDispute {
+  disputed_by_user_id: number;
+  name: string;
+}
+
+/** Everyone who's disputed a result, oldest first --- what the results list
+ * renders as "disputed by N of M named participants." */
+export function disputesForResult(resultId: number): ResultDispute[] {
+  return db
+    .prepare(
+      `SELECT result_disputes.disputed_by_user_id, users.name FROM result_disputes
+       JOIN users ON users.id = result_disputes.disputed_by_user_id
+       WHERE result_disputes.result_id = ?
+       ORDER BY result_disputes.id ASC`,
+    )
+    .all(resultId) as unknown as ResultDispute[];
 }
 
 export interface ResultParticipant {

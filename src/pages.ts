@@ -1,5 +1,5 @@
 import type { Group, GroupMatch, MemberWithRole, MembershipWithGroup, Result, Role, Tag, User } from "./db.ts";
-import { getGroupById, getUserById, participantsForResult } from "./db.ts";
+import { disputesForResult, getGroupById, getUserById, participantsForResult } from "./db.ts";
 import { curatedTagsByCategory } from "./db.ts";
 import { baseStyles, iconChip, logoMark, siteHeader } from "./styles.ts";
 import { GAME_NAMES, type MinigameSession, type RockPaperScissorsState, type TicTacToeState } from "./minigames.ts";
@@ -448,6 +448,50 @@ function witnessBadge(result: Result, code: string, viewerId: number | undefined
   return `<span class="witness-pill witness-${result.witness_status}">${label}</span>`;
 }
 
+/** Who logged a result, if anyone --- a result from before this column
+ * existed has no logger and renders nothing
+ * (decisions/0006-named-party-disputes-and-logger-attribution.md). Shown to
+ * every viewer, not gated on anything: the point is a group being able to
+ * see who's been doing the logging, which an optional witness alone never
+ * surfaced. */
+function loggedByLine(result: Result): string {
+  if (result.logged_by_user_id === null) return "";
+  const logger = getUserById(result.logged_by_user_id);
+  if (!logger) return "";
+  return `<span class="logged-by">logged by <a href="/u/${logger.id}">${escapeHtml(logger.name)}</a></span>`;
+}
+
+/** The dispute control for a result --- unlike the witness badge, this isn't
+ * one decision between two states: every named winner/loser who disputes it
+ * adds their own row, so this renders a running count plus (only for a
+ * viewer who's actually eligible --- named on either side, didn't log it
+ * themselves, hasn't already disputed it) a button to add their own.
+ * Eligibility is re-checked server-side regardless of what this renders
+ * (decisions/0006), the same client-renders-the-affordance,
+ * server-re-checks-the-rule pattern the owner-only "Remove member" button
+ * already uses. */
+function disputeControls(result: Result, code: string, viewerId: number | undefined): string {
+  const disputes = disputesForResult(result.id);
+  const alreadyDisputed = viewerId !== undefined && disputes.some((d) => d.disputed_by_user_id === viewerId);
+  const isParticipant =
+    viewerId !== undefined &&
+    (participantsForResult(result.id, "winner").some((p) => p.id === viewerId) ||
+      participantsForResult(result.id, "loser").some((p) => p.id === viewerId));
+  const canDispute = isParticipant && viewerId !== result.logged_by_user_id && !alreadyDisputed;
+
+  const countPill =
+    disputes.length > 0
+      ? `<span class="witness-pill witness-disputed">disputed by ${disputes.length} of ${
+          participantsForResult(result.id, "winner").length + participantsForResult(result.id, "loser").length
+        } named</span>`
+      : "";
+
+  if (!canDispute) return countPill;
+  return `${countPill}<form method="post" action="/g/${code}/results/${result.id}/dispute" style="display:inline">
+    <button type="submit" class="btn-ghost witness-btn">Dispute this</button>
+  </form>`;
+}
+
 export function resultsListFragment(group: Group, results: Result[], viewerId?: number): string {
   if (results.length === 0) {
     return `<p class="empty">No results yet. Be the first to log one.</p>`;
@@ -461,6 +505,8 @@ export function resultsListFragment(group: Group, results: Result[], viewerId?: 
           <span>beat</span>
           <span class="loser">${sideNames(r.id, "loser", r.loser)}</span>
           ${witnessBadge(r, group.code, viewerId)}
+          ${disputeControls(r, group.code, viewerId)}
+          ${loggedByLine(r)}
         </div>
         <span class="when">${new Date(r.created_at).toLocaleString("en-AU", { dateStyle: "medium", timeStyle: "short" })}</span>
       </li>`;
@@ -729,6 +775,7 @@ export function groupPage(
   profileError?: string,
   challengeError?: string,
   witnessError?: string,
+  disputeError?: string,
 ): string {
   const code = escapeHtml(group.code);
   const memberOptions = memberOptionsFragment(members);
@@ -875,6 +922,7 @@ export function groupPage(
       <div class="group-layout-feed">
         <h2 class="h2-live"><span class="live-dot"></span>Results</h2>
         ${witnessError ? `<p class="error-text">${escapeHtml(witnessError)}</p>` : ""}
+        ${disputeError ? `<p class="error-text">${escapeHtml(disputeError)}</p>` : ""}
         <div id="results-list">${resultsListFragment(group, results, user?.id)}</div>
         <h2 class="h2-live"><span class="live-dot"></span>Group matches</h2>
         <div id="group-matches-list">${groupMatchesFragment(group, groupMatches)}</div>

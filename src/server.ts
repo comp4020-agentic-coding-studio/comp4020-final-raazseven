@@ -5,6 +5,7 @@ import multipart from "@fastify/multipart";
 import {
   addGroupMatch,
   addResult,
+  addResultDispute,
   createGroup,
   getGroupByCode,
   getResultById,
@@ -121,6 +122,7 @@ function renderGroupPage(
     profileError?: string;
     challengeError?: string;
     witnessError?: string;
+    disputeError?: string;
   } = {},
 ): string {
   const membership = user ? membershipFor(user.id, group.id) : undefined;
@@ -138,6 +140,7 @@ function renderGroupPage(
     errors.profileError,
     errors.challengeError,
     errors.witnessError,
+    errors.disputeError,
   );
 }
 
@@ -469,7 +472,7 @@ app.post<{
     witnessId = candidate;
   }
 
-  const result = addResult(group.id, game, [...winnerIds], [...loserIds], witnessId);
+  const result = addResult(group.id, game, [...winnerIds], [...loserIds], witnessId, user.id);
   record(
     req,
     user.id,
@@ -527,6 +530,46 @@ app.post<{ Params: { code: string; id: string }; Body: { decision: string } }>(
     reply.redirect(`/g/${group.code}`, 303);
   },
 );
+
+/** A named winner or loser disputes a result --- not gated on a witness
+ * having been named at all (decisions/0006-named-party-disputes-and-logger-attribution.md).
+ * Unlike witness confirm/deny this isn't a one-shot decision between two
+ * fixed states: each eligible disputer gets their own row, append-only, and
+ * a repeat dispute from the same person is a no-op rather than an error ---
+ * there's nothing wrong with clicking it twice, there's just nothing more
+ * for it to do. */
+app.post<{ Params: { code: string; id: string } }>("/g/:code/results/:id/dispute", async (req, reply) => {
+  const group = getGroupByCode(req.params.code.toUpperCase());
+  if (!group) return reply.code(404).send("no group with that code");
+
+  const user = currentUser(req);
+  if (!user) return reply.redirect(`/login?next=${encodeURIComponent(`/g/${group.code}`)}`, 303);
+
+  const resultId = Number(req.params.id);
+  const result = getResultById(resultId);
+  if (!result || result.group_id !== group.id) return reply.code(404).send("no such result");
+
+  if (result.logged_by_user_id === user.id) {
+    return reply
+      .type("text/html")
+      .send(renderGroupPage(group, user, { disputeError: "you can't dispute a result you logged yourself" }));
+  }
+  const disputed = addResultDispute(resultId, user.id);
+  if (!disputed) {
+    return reply
+      .type("text/html")
+      .send(renderGroupPage(group, user, { disputeError: "only a winner or loser named in this result can dispute it" }));
+  }
+  record(
+    req,
+    user.id,
+    "result.dispute",
+    group.id,
+    `"${user.name}" disputed the ${result.game} result (${result.winner} beat ${result.loser}) in "${group.name}"`,
+  );
+  broadcast(group.code, { type: "result", html: resultsListFragment(group, resultsForGroup(group.id)) });
+  reply.redirect(`/g/${group.code}`, 303);
+});
 
 app.post<{ Params: { code: string }; Body: { opponentCode: string; game: string; scoreUs: string; scoreThem: string } }>(
   "/g/:code/matches",
@@ -805,7 +848,7 @@ app.post<{ Params: { code: string; id: string }; Body: { cell?: string; choice?:
       const loserId = result.session.playerIds.find((id) => id !== winnerId)!;
       const winner = getUserById(winnerId)!;
       const loser = getUserById(loserId)!;
-      addResult(group.id, gameName, [winnerId], [loserId]);
+      addResult(group.id, gameName, [winnerId], [loserId], undefined, user.id);
       record(
         req,
         user.id,

@@ -806,6 +806,13 @@ export const baseStyles = `
     font-size: 0.75rem;
   }
 
+  .logged-by {
+    font-size: 0.7rem;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  .logged-by a { color: inherit; }
+
   .empty {
     color: var(--muted);
     font-style: italic;
