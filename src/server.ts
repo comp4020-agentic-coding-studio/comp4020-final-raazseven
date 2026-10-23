@@ -7,6 +7,7 @@ import {
   addResult,
   createGroup,
   getGroupByCode,
+  getResultById,
   getUserById,
   groupMatchesForGroup,
   headToHeadResults,
@@ -26,6 +27,7 @@ import {
   setGroupAvatar,
   setGroupTags,
   setUserAvatar,
+  setWitnessStatus,
   tagById,
   tagsForGroup,
   teamedUpResults,
@@ -118,6 +120,7 @@ function renderGroupPage(
     avatarError?: string;
     profileError?: string;
     challengeError?: string;
+    witnessError?: string;
   } = {},
 ): string {
   const membership = user ? membershipFor(user.id, group.id) : undefined;
@@ -134,6 +137,7 @@ function renderGroupPage(
     errors.avatarError,
     errors.profileError,
     errors.challengeError,
+    errors.witnessError,
   );
 }
 
@@ -402,53 +406,122 @@ function idSet(raw: string | string[] | undefined): Set<number> {
   );
 }
 
-app.post<{ Params: { code: string }; Body: { game: string; winner: string | string[]; loser: string | string[] } }>(
-  "/g/:code/results",
+app.post<{
+  Params: { code: string };
+  Body: { game: string; winner: string | string[]; loser: string | string[]; witness?: string };
+}>("/g/:code/results", async (req, reply) => {
+  const group = getGroupByCode(req.params.code.toUpperCase());
+  if (!group) return reply.code(404).send("no group with that code");
+
+  const user = currentUser(req);
+  const membership = user ? membershipFor(user.id, group.id) : undefined;
+  if (!user || !membership) {
+    // Not a member of this group (or not signed in at all) --- send them
+    // to join rather than silently dropping the result.
+    return reply.type("text/html").send(renderGroupPage(group, user));
+  }
+
+  const game = req.body.game?.trim();
+  const winnerIds = idSet(req.body.winner);
+  const loserIds = idSet(req.body.loser);
+  if (!game || winnerIds.size === 0 || loserIds.size === 0) {
+    return reply
+      .type("text/html")
+      .send(renderGroupPage(group, user, { resultError: "game, at least one winner and at least one loser are required" }));
+  }
+  // A side can be a team (any number of people), but no one can be on
+  // both sides of the same result --- the original single-id check
+  // generalized to a set-intersection one.
+  const overlap = [...winnerIds].some((id) => loserIds.has(id));
+  if (overlap) {
+    return reply
+      .type("text/html")
+      .send(renderGroupPage(group, user, { resultError: "winner and loser can't be the same player" }));
+  }
+  // Everyone named has to already be a member of this group --- a result
+  // can't be logged against someone who was never there.
+  const allMembers = [...winnerIds, ...loserIds].every((id) => memberInGroup(group.id, id));
+  if (!allMembers) {
+    return reply
+      .type("text/html")
+      .send(renderGroupPage(group, user, { resultError: "winner and loser must both be members of this group" }));
+  }
+
+  // A witness is optional (decisions/0005-witness-confirmation.md) --- this
+  // app's trust-based logging model is unchanged when no one names one.
+  // When named, they have to be a real group member not already on either
+  // side --- a winner or loser vouching for their own result defeats the
+  // point.
+  let witnessId: number | undefined;
+  const rawWitness = req.body.witness?.trim();
+  if (rawWitness) {
+    const candidate = Number(rawWitness);
+    if (!Number.isInteger(candidate) || !memberInGroup(group.id, candidate)) {
+      return reply
+        .type("text/html")
+        .send(renderGroupPage(group, user, { resultError: "the witness must be a member of this group" }));
+    }
+    if (winnerIds.has(candidate) || loserIds.has(candidate)) {
+      return reply
+        .type("text/html")
+        .send(renderGroupPage(group, user, { resultError: "the witness can't also be a winner or loser" }));
+    }
+    witnessId = candidate;
+  }
+
+  const result = addResult(group.id, game, [...winnerIds], [...loserIds], witnessId);
+  record(
+    req,
+    user.id,
+    "result.create",
+    group.id,
+    `"${user.name}" logged ${game}: ${result.winner} beat ${result.loser} in "${group.name}"` +
+      (witnessId ? ` (witnessed by user ${witnessId})` : ""),
+  );
+  broadcast(group.code, { type: "result", html: resultsListFragment(group, resultsForGroup(group.id)) });
+  reply.redirect(`/g/${group.code}`, 303);
+});
+
+app.post<{ Params: { code: string; id: string }; Body: { decision: string } }>(
+  "/g/:code/results/:id/witness",
   async (req, reply) => {
     const group = getGroupByCode(req.params.code.toUpperCase());
     if (!group) return reply.code(404).send("no group with that code");
 
     const user = currentUser(req);
-    const membership = user ? membershipFor(user.id, group.id) : undefined;
-    if (!user || !membership) {
-      // Not a member of this group (or not signed in at all) --- send them
-      // to join rather than silently dropping the result.
-      return reply.type("text/html").send(renderGroupPage(group, user));
+    if (!user) return reply.redirect(`/login?next=${encodeURIComponent(`/g/${group.code}`)}`, 303);
+
+    const resultId = Number(req.params.id);
+    const result = getResultById(resultId);
+    if (!result || result.group_id !== group.id) return reply.code(404).send("no such result");
+
+    const decision = req.body.decision === "confirm" ? "confirmed" : req.body.decision === "deny" ? "disputed" : undefined;
+    if (!decision) {
+      return reply.type("text/html").send(renderGroupPage(group, user, { witnessError: "pick confirm or deny" }));
+    }
+    if (result.witness_user_id !== user.id) {
+      return reply
+        .type("text/html")
+        .send(renderGroupPage(group, user, { witnessError: "only the named witness can confirm or deny this result" }));
+    }
+    if (result.witness_status !== "pending") {
+      return reply
+        .type("text/html")
+        .send(renderGroupPage(group, user, { witnessError: "this result has already been confirmed or denied" }));
     }
 
-    const game = req.body.game?.trim();
-    const winnerIds = idSet(req.body.winner);
-    const loserIds = idSet(req.body.loser);
-    if (!game || winnerIds.size === 0 || loserIds.size === 0) {
+    const updated = setWitnessStatus(resultId, user.id, decision);
+    if (!updated) {
       return reply
         .type("text/html")
-        .send(renderGroupPage(group, user, { resultError: "game, at least one winner and at least one loser are required" }));
+        .send(renderGroupPage(group, user, { witnessError: "this result has already been confirmed or denied" }));
     }
-    // A side can be a team (any number of people), but no one can be on
-    // both sides of the same result --- the original single-id check
-    // generalized to a set-intersection one.
-    const overlap = [...winnerIds].some((id) => loserIds.has(id));
-    if (overlap) {
-      return reply
-        .type("text/html")
-        .send(renderGroupPage(group, user, { resultError: "winner and loser can't be the same player" }));
-    }
-    // Everyone named has to already be a member of this group --- a result
-    // can't be logged against someone who was never there.
-    const allMembers = [...winnerIds, ...loserIds].every((id) => memberInGroup(group.id, id));
-    if (!allMembers) {
-      return reply
-        .type("text/html")
-        .send(renderGroupPage(group, user, { resultError: "winner and loser must both be members of this group" }));
-    }
-
-    const result = addResult(group.id, game, [...winnerIds], [...loserIds]);
     record(
       req,
       user.id,
-      "result.create",
+      "result.witness",
       group.id,
-      `"${user.name}" logged ${game}: ${result.winner} beat ${result.loser} in "${group.name}"`,
+      `"${user.name}" ${decision === "confirmed" ? "confirmed" : "disputed"} the ${updated.game} result (${updated.winner} beat ${updated.loser}) in "${group.name}"`,
     );
     broadcast(group.code, { type: "result", html: resultsListFragment(group, resultsForGroup(group.id)) });
     reply.redirect(`/g/${group.code}`, 303);

@@ -784,6 +784,28 @@ export const baseStyles = `
   .result-row .loser { color: var(--muted); }
   .result-row .when { font-size: 0.8rem; color: var(--muted); white-space: nowrap; }
 
+  .witness-pill {
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 0.15rem 0.55rem;
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+  .witness-pending { color: #92400e; background: color-mix(in srgb, #f59e0b 18%, transparent); }
+  .witness-confirmed { color: #166534; background: color-mix(in srgb, #22c55e 18%, transparent); }
+  .witness-disputed { color: #991b1b; background: color-mix(in srgb, #ef4444 18%, transparent); }
+
+  .witness-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+  }
+  .witness-btn {
+    padding: 0.2rem 0.6rem;
+    font-size: 0.75rem;
+  }
+
   .empty {
     color: var(--muted);
     font-style: italic;

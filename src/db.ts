@@ -255,6 +255,19 @@ if (!resultColumns.some((c) => c.name === "loser_user_id")) {
   db.exec("ALTER TABLE results ADD COLUMN loser_user_id INTEGER REFERENCES users(id)");
 }
 
+// Migration: witness confirmation (decisions/0005-witness-confirmation.md).
+// `witness_user_id` is optional --- a result logged with no witness keeps
+// working exactly as before, with status 'none'. A result logged before this
+// feature shipped also lands on 'none' (DEFAULT), the same "no witness, same
+// as every result before this existed" fallback the winner/loser-id columns
+// above already use.
+if (!resultColumns.some((c) => c.name === "witness_user_id")) {
+  db.exec("ALTER TABLE results ADD COLUMN witness_user_id INTEGER REFERENCES users(id)");
+}
+if (!resultColumns.some((c) => c.name === "witness_status")) {
+  db.exec("ALTER TABLE results ADD COLUMN witness_status TEXT NOT NULL DEFAULT 'none'");
+}
+
 // Migration: group_matches.logged_by_member_id was declared NOT NULL back
 // when a member was the only kind of account --- SQLite can't relax a NOT
 // NULL constraint with a plain ALTER TABLE, so this rebuilds the table the
@@ -458,6 +471,8 @@ export function tagsForGroup(groupId: number): Tag[] {
     .all(groupId) as unknown as Tag[];
 }
 
+export type WitnessStatus = "none" | "pending" | "confirmed" | "disputed";
+
 export interface Result {
   id: number;
   group_id: number;
@@ -468,6 +483,8 @@ export interface Result {
   loser_member_id: number | null; // legacy (pre-global-accounts)
   winner_user_id: number | null;
   loser_user_id: number | null;
+  witness_user_id: number | null;
+  witness_status: WitnessStatus;
   created_at: string;
 }
 
@@ -535,16 +552,35 @@ export function updateGroupProfile(groupId: number, bio: string, tagIds: number[
  * accurate for a 1v1; `result_participants` is the full roster for a side
  * with more than one person.
  */
-export function addResult(groupId: number, game: string, winnerIds: number[], loserIds: number[]): Result {
+export function addResult(
+  groupId: number,
+  game: string,
+  winnerIds: number[],
+  loserIds: number[],
+  witnessId?: number,
+): Result {
   const winners = winnerIds.map((id) => getUserById(id)!);
   const losers = loserIds.map((id) => getUserById(id)!);
   const winnerText = winners.map((u) => u.name).join(" & ");
   const loserText = losers.map((u) => u.name).join(" & ");
+  const witnessStatus: WitnessStatus = witnessId !== undefined ? "pending" : "none";
   const info = db
     .prepare(
-      "INSERT INTO results (group_id, game, winner, loser, winner_user_id, loser_user_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      `INSERT INTO results
+        (group_id, game, winner, loser, winner_user_id, loser_user_id, witness_user_id, witness_status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-    .run(groupId, game, winnerText, loserText, winnerIds[0], loserIds[0], new Date().toISOString());
+    .run(
+      groupId,
+      game,
+      winnerText,
+      loserText,
+      winnerIds[0],
+      loserIds[0],
+      witnessId ?? null,
+      witnessStatus,
+      new Date().toISOString(),
+    );
   const resultId = info.lastInsertRowid as number;
   const insertParticipant = db.prepare(
     "INSERT INTO result_participants (result_id, user_id, side) VALUES (?, ?, ?)",
@@ -558,6 +594,27 @@ export function resultsForGroup(groupId: number): Result[] {
   return db
     .prepare("SELECT * FROM results WHERE group_id = ? ORDER BY created_at DESC, id DESC")
     .all(groupId) as unknown as Result[];
+}
+
+export function getResultById(resultId: number): Result | undefined {
+  return db.prepare("SELECT * FROM results WHERE id = ?").get(resultId) as Result | undefined;
+}
+
+/** The named witness confirms or denies a result they were asked to vouch
+ * for --- a no-op if the result has no pending witness, or if `actingUserId`
+ * isn't the one actually named (the caller checks this too, but the guard
+ * lives here as well so this function is safe to call on its own). Denying
+ * doesn't delete anything (CLAUDE.md: never drop data to resolve a dispute);
+ * it just flips the status so the group can see the result is contested. */
+export function setWitnessStatus(
+  resultId: number,
+  actingUserId: number,
+  status: "confirmed" | "disputed",
+): Result | undefined {
+  const result = getResultById(resultId);
+  if (!result || result.witness_status !== "pending" || result.witness_user_id !== actingUserId) return undefined;
+  db.prepare("UPDATE results SET witness_status = ? WHERE id = ?").run(status, resultId);
+  return getResultById(resultId);
 }
 
 export interface ResultParticipant {

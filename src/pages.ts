@@ -1,5 +1,5 @@
 import type { Group, GroupMatch, MemberWithRole, MembershipWithGroup, Result, Role, Tag, User } from "./db.ts";
-import { getGroupById, participantsForResult } from "./db.ts";
+import { getGroupById, getUserById, participantsForResult } from "./db.ts";
 import { curatedTagsByCategory } from "./db.ts";
 import { baseStyles, iconChip, logoMark, siteHeader } from "./styles.ts";
 import { GAME_NAMES, type MinigameSession, type RockPaperScissorsState, type TicTacToeState } from "./minigames.ts";
@@ -423,7 +423,32 @@ function sideNames(resultId: number, side: "winner" | "loser", fallbackName: str
     .join(" &amp; ");
 }
 
-export function resultsListFragment(group: Group, results: Result[]): string {
+/** The witness badge next to a result --- a plain pill when there's nothing
+ * to do, or (only for the named witness, only while still "pending") the
+ * confirm/deny buttons themselves. Every other viewer, including the
+ * winner/loser, sees only the status --- vouching for a result is the
+ * witness's call alone (decisions/0005-witness-confirmation.md). */
+function witnessBadge(result: Result, code: string, viewerId: number | undefined): string {
+  if (result.witness_status === "none") return "";
+  const witness = result.witness_user_id !== null ? getUserById(result.witness_user_id) : undefined;
+  const witnessName = witness ? escapeHtml(witness.name) : "a witness";
+  if (result.witness_status === "pending" && viewerId === result.witness_user_id) {
+    return `<form method="post" action="/g/${code}/results/${result.id}/witness" class="witness-actions">
+      <span class="witness-pill witness-pending">awaiting your word</span>
+      <button type="submit" name="decision" value="confirm" class="btn-solid witness-btn">Confirm</button>
+      <button type="submit" name="decision" value="deny" class="btn-ghost witness-btn">Deny</button>
+    </form>`;
+  }
+  const label =
+    result.witness_status === "pending"
+      ? `awaiting ${witnessName}'s word`
+      : result.witness_status === "confirmed"
+        ? `confirmed by ${witnessName}`
+        : `disputed by ${witnessName}`;
+  return `<span class="witness-pill witness-${result.witness_status}">${label}</span>`;
+}
+
+export function resultsListFragment(group: Group, results: Result[], viewerId?: number): string {
   if (results.length === 0) {
     return `<p class="empty">No results yet. Be the first to log one.</p>`;
   }
@@ -435,6 +460,7 @@ export function resultsListFragment(group: Group, results: Result[]): string {
           <span class="winner">${sideNames(r.id, "winner", r.winner)}</span>
           <span>beat</span>
           <span class="loser">${sideNames(r.id, "loser", r.loser)}</span>
+          ${witnessBadge(r, group.code, viewerId)}
         </div>
         <span class="when">${new Date(r.created_at).toLocaleString("en-AU", { dateStyle: "medium", timeStyle: "short" })}</span>
       </li>`;
@@ -702,6 +728,7 @@ export function groupPage(
   avatarError?: string,
   profileError?: string,
   challengeError?: string,
+  witnessError?: string,
 ): string {
   const code = escapeHtml(group.code);
   const memberOptions = memberOptionsFragment(members);
@@ -750,6 +777,10 @@ export function groupPage(
         </div>`
       : "";
 
+  const witnessOptions = `<option value="">no witness</option>${members
+    .map((m) => `<option value="${m.id}">${escapeHtml(m.name)}</option>`)
+    .join("\n")}`;
+
   const logResultCard = isMember
     ? `<div class="card">
         <h2 style="margin-top:0">Log a result</h2>
@@ -762,6 +793,9 @@ export function groupPage(
           <select id="winner-select" name="winner" multiple required size="4">${memberOptions}</select>
           <label for="loser-select">Loser(s)</label>
           <select id="loser-select" name="loser" multiple required size="4">${memberOptions}</select>
+          <label for="witness-select">Witness (optional)</label>
+          <select id="witness-select" name="witness">${witnessOptions}</select>
+          <p class="lede" style="font-size:0.75rem; margin:-0.25rem 0 0.5rem">Name a third member to vouch for this result --- it'll show as pending until they confirm or deny it.</p>
           <button type="submit">Log result</button>
         </form>
       </div>`
@@ -840,7 +874,8 @@ export function groupPage(
       </div>
       <div class="group-layout-feed">
         <h2 class="h2-live"><span class="live-dot"></span>Results</h2>
-        <div id="results-list">${resultsListFragment(group, results)}</div>
+        ${witnessError ? `<p class="error-text">${escapeHtml(witnessError)}</p>` : ""}
+        <div id="results-list">${resultsListFragment(group, results, user?.id)}</div>
         <h2 class="h2-live"><span class="live-dot"></span>Group matches</h2>
         <div id="group-matches-list">${groupMatchesFragment(group, groupMatches)}</div>
       </div>

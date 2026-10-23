@@ -32,9 +32,11 @@ and wants the receipts instead of relying on memory and exaggeration.
 
 ## What I chose not to build (yet)
 
-- **Witness confirmation.** Right now any result can be logged on trust.
-  Confirmation by a third friend is next week's build, once logging itself is
-  solid.
+- **Witness confirmation on every kind of result.** A manually-logged result
+  can now optionally name a third group member as a witness, who confirms or
+  denies it ([`decisions/0005-witness-confirmation.md`](decisions/0005-witness-confirmation.md)).
+  Mini-game outcomes and group-vs-group matches still log on trust alone —
+  extending witnessing to those is a natural follow-up, not done here.
 - **A fixed list of supported games.** Deliberately generic — a game name,
   a winner, a loser — so the app never needs updating to add a new sport.
   Richer per-game detail (scores, rounds) can come later if it earns its
