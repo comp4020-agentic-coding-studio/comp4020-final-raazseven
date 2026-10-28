@@ -50,23 +50,21 @@ that shaped it; not restated here.
 
 ## Since crit 10: finishing the final project
 
-Five rounds of work landed after crit 10's cutoff, continuing the same app
+Six rounds of work landed after crit 10's cutoff, continuing the same app
 toward the final submission rather than starting a new feature set:
 
 **A visual pass**
 ([`2a7a16b`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/2a7a16b),
 [`a841a4e`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/a841a4e)):
-a "liquid glass" CSS treatment and a fluid `--page-width`
-(`clamp(40rem, 90vw, 100rem)`) replacing three fixed breakpoints that left a
-static gutter on anything wider than 1024px.
+a "liquid glass" CSS treatment and a fluid page width replacing three fixed
+breakpoints that left a gutter on anything wider than 1024px.
 
 **Live mini-game challenges**
 ([`48afeca`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/48afeca),
 [`decisions/0004`](decisions/0004-mini-game-challenges.md)): Tic-Tac-Toe and
-Rock-Paper-Scissors, written from scratch (license reasons). A finished game
-logs through the *existing* `addResult()`, no schema change. Rock-Paper-
-Scissors needed one real design decision: a choice can't broadcast until
-*both* players have chosen, since this app's SSE fragments are
+Rock-Paper-Scissors, written from scratch, logging through the *existing*
+`addResult()`. Rock-Paper-Scissors needed one real decision: a choice can't
+broadcast until *both* players have chosen, since SSE fragments here are
 viewer-agnostic by construction.
 
 **Witness confirmation**
@@ -79,31 +77,36 @@ denies it; denial marks the result disputed, not removed.
 **Named-party disputes and logger attribution**
 ([`b56fd33`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/b56fd33),
 [`decisions/0006`](decisions/0006-named-party-disputes-and-logger-attribution.md)):
-asked directly whether an optional witness was enough, a fuller audit found
-the actual winner/loser named in a result had no say over it at all, and
+asked directly whether an optional witness was enough, an audit found the
+actual winner/loser named in a result had no say over it at all, and
 `results` had no `logged_by_user_id` — unlike `group_matches`, which already
-tracked who logged a match. Closed additively: every result now shows who
-logged it, and any named winner or loser (not just a witness) can raise a
-permanent, visible dispute, independent of whether a witness exists. The
-logger can't dispute their own submission. Group-vs-group matches remain
-unprotected — named in the ADR as the largest gap still open.
+tracked who logged a match. Closed additively: every result shows who logged
+it, and any named winner or loser (not just a witness) can raise a
+permanent, visible dispute. The logger can't dispute their own submission.
+Group-vs-group matches remain unprotected — named as the largest gap left.
 
 **Challenge accept/decline, and a friend stats dashboard**
 ([`b122c66`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/b122c66),
 [`decisions/0007`](decisions/0007-minigame-challenge-accept.md)): a mini-game
 challenge used to start active immediately, dropping the opponent into a
-live match with no warning. It now starts `pending`; the opponent gets a
-live "Challenges waiting on you" card and Accept/Decline, reversing part of
-`decisions/0004`'s original reasoning once it was clear *trust-based
-logging* (a past claim) and *consent to a live match happening now* are
-different questions. The pending card's visibility is viewer-specific, which
-this app's broadcast mechanism can't target directly (the same limit
-Rock-Paper-Scissors hit) — solved with a signal-only event and a client
-reload rather than new per-viewer broadcast plumbing. Separately,
-`GET /me/stats` aggregates overall and per-game win/loss against every
-current friend into one dashboard, instead of checking one profile at a
-time; it counts every result regardless of witness/dispute status, same as
-the results list always has.
+live match with no warning. It now starts `pending` until accepted,
+reversing part of `decisions/0004`'s reasoning once it was clear
+*trust-based logging* (a past claim) and *consent to a live match happening
+now* are different questions. Separately, `GET /me/stats` aggregates
+overall and per-game win/loss against every current friend into one
+dashboard, counting every result regardless of witness/dispute status, same
+as the results list always has.
+
+**A challenge notification that reaches you anywhere, not just that one
+group's page**
+([`33d5bf4`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/33d5bf4),
+[`decisions/0008`](decisions/0008-site-wide-challenge-notification.md)):
+0007's own card only reached someone already looking at the specific
+group's page a challenge came from. Fixed with a new per-user live channel
+(`GET /me/events`, keyed by account id — same pattern as the existing
+per-game channel, a different key prefix) and a `<dialog>` popup wired into
+`layout()`, the one function every page renders through, so it shows up on
+`/me`, a different group, anywhere a signed-in user is in the app.
 
 ## Process discipline: corrections became rules, not one-off fixes
 
@@ -128,15 +131,16 @@ parallelism noise.
 
 ## Verification discipline
 
-`pnpm check` is 85/85 clean as of
-[`b122c66`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/b122c66).
+`pnpm check` is 94/94 clean as of
+[`33d5bf4`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/33d5bf4).
 Every session this project has run has re-verified past what the test suite
 alone can show: SSH'ing into the live machine to confirm a migration
 actually landed on `/data/app.db`, re-opening the live SSE stream after a
 deploy that "wasn't about real-time" to watch a result still arrive on a
 second connection, and manual end-to-end `curl` walkthroughs of a new
 route (a pending challenge's accept/decline, the stats dashboard's actual
-numbers) rather than trusting the render functions in isolation once the
-spec suite passed. `research-log/index0.md` is the running account of what
-each session actually tried, including the mistakes — this file is the
-current snapshot; that one is the history.
+numbers, a challenge notification fetched from a page unrelated to the
+group it came from) rather than trusting the render functions in isolation
+once the spec suite passed. `research-log/index0.md` is the running
+account of what each session actually tried, including the mistakes — this
+file is the current snapshot; that one is the history.
