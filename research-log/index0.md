@@ -366,3 +366,50 @@ Verified: `pnpm typecheck` clean, and the full suite (85/85, 78 pre-existing
 `spec/minigames.test.ts` (16/16) and `spec/invariants.test.ts` (confirming
 the new README.md link to `/me/stats` doesn't break the `/readme/` heading
 check).
+
+## 2026-10-29
+
+Follow-up to `decisions/0007`: told directly that the pending-challenges
+notice wasn't good enough --- it sat as a plain card in the page's left
+column (easy to miss, not actually a popup), and more importantly it only
+ever reached the challenged opponent if they happened to already be looking
+at that specific group's page. Asked explicitly whether the fix should stay
+scoped to that one page or reach the person anywhere in the app; the answer
+was anywhere, which meant a real architectural piece this app didn't have
+yet: a per-user (not per-group) live channel.
+
+Wrote `decisions/0008-site-wide-challenge-notification.md` before touching
+code, since this is exactly the kind of decision (new channel shape, not
+just new markup) the project's own documentation discipline asks for.
+Design: `GET /me/events`, a new SSE connection keyed by the signed-in user's
+own id (`userChannelFor()` in `src/minigames.ts`, same `` `prefix:${id}` ``
+pattern `channelFor()` already uses for a per-game channel, just a different
+prefix) rather than a group code. `POST /g/:code/games` now broadcasts on
+both the group's existing channel (0007's card, unchanged) and the
+challenged opponent's own channel (new). Every page, via `layout()` in
+`src/pages.ts` --- the one function literally every page renders through ---
+gets a `<dialog id="challenge-popup">` shell plus a small script that opens
+`/me/events` once and, on load or on a live ping, fetches `/me/challenges`
+(a new fragment route) and shows the dialog modally if anything's pending.
+
+Design choice worth remembering: the popup's own markup
+(`challengePopupFragment` in `src/pages.ts`) had to look the challenge's
+*group* up per-session rather than taking one shared group/code parameter,
+unlike the existing per-group card --- the whole point of this feature is
+that challenges can come from different groups at once, so each row needs
+its own group name/code rather than assuming they all share one.
+
+Verified by hand before writing automated tests: challenged someone from
+group A, then fetched `/me` (a completely unrelated page) in a second
+session and confirmed the `<dialog>` shell and fragment both appear with no
+relation to group A's own page --- the thing actually being fixed. Then
+wrote `spec/challenge-notifications.test.ts` (9 tests): the fragment route
+requires sign-in, is empty with nothing pending, surfaces a challenge
+regardless of which group it came from, every signed-in page (not just the
+group's) carries the dialog shell, a signed-out visitor gets none of it, the
+challenger never sees their own outgoing challenge in their own fragment,
+accept/decline both clear it, and two challenges from two different groups
+both surface in one fetch.
+
+Verified: `pnpm typecheck` clean, full suite (94/94, 85 pre-existing + 9
+new) green.
