@@ -50,40 +50,60 @@ that shaped it; not restated here.
 
 ## Since crit 10: finishing the final project
 
-Three rounds of work landed after crit 10's cutoff, continuing the same app
+Five rounds of work landed after crit 10's cutoff, continuing the same app
 toward the final submission rather than starting a new feature set:
 
 **A visual pass**
 ([`2a7a16b`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/2a7a16b),
 [`a841a4e`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/a841a4e)):
-a "liquid glass" look built entirely from CSS custom properties
-(`--glass-bg`, `--glass-blur`, etc.) layered onto the existing light/dark
-tokens, with a `prefers-reduced-transparency` fallback to a plain opaque
-surface rather than an invisible one; and a fluid `--page-width`
+a "liquid glass" CSS treatment and a fluid `--page-width`
 (`clamp(40rem, 90vw, 100rem)`) replacing three fixed breakpoints that left a
-static empty gutter on anything wider than 1024px.
+static gutter on anything wider than 1024px.
 
 **Live mini-game challenges**
 ([`48afeca`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/48afeca),
 [`decisions/0004`](decisions/0004-mini-game-challenges.md)): Tic-Tac-Toe and
-Rock-Paper-Scissors, written from scratch (license reasons) rather than
-pulled from an existing repo. A finished game logs through the *existing*
-`addResult()`, no schema change — deliberately reusing this app's trust-based
-logging model rather than adding an invite/accept step. Rock-Paper-Scissors
-needed one real design decision: a player's choice can't broadcast until
-*both* have chosen, since this app's SSE fragments are viewer-agnostic by
-construction and a second player could otherwise just wait for the live
-update before picking.
+Rock-Paper-Scissors, written from scratch (license reasons). A finished game
+logs through the *existing* `addResult()`, no schema change. Rock-Paper-
+Scissors needed one real design decision: a choice can't broadcast until
+*both* players have chosen, since this app's SSE fragments are
+viewer-agnostic by construction.
 
 **Witness confirmation**
 ([`4ec0c83`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/4ec0c83),
 [`decisions/0005`](decisions/0005-witness-confirmation.md)): `README.md` had
-named this as deliberately deferred since crit 8 ("logged on trust... next
-week's build"). A manually-logged result can now optionally name a third
-group member as a witness, who confirms or denies it; denial marks the
-result disputed rather than removing it. Scoped to manual logging only —
-mini-game and group-match auto-logs still log on trust, an explicit scope
-cut recorded in the ADR, not an oversight.
+named this as deliberately deferred since crit 8. A manually-logged result
+can optionally name a third group member as a witness, who confirms or
+denies it; denial marks the result disputed, not removed.
+
+**Named-party disputes and logger attribution**
+([`b56fd33`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/b56fd33),
+[`decisions/0006`](decisions/0006-named-party-disputes-and-logger-attribution.md)):
+asked directly whether an optional witness was enough, a fuller audit found
+the actual winner/loser named in a result had no say over it at all, and
+`results` had no `logged_by_user_id` — unlike `group_matches`, which already
+tracked who logged a match. Closed additively: every result now shows who
+logged it, and any named winner or loser (not just a witness) can raise a
+permanent, visible dispute, independent of whether a witness exists. The
+logger can't dispute their own submission. Group-vs-group matches remain
+unprotected — named in the ADR as the largest gap still open.
+
+**Challenge accept/decline, and a friend stats dashboard**
+([`b122c66`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/b122c66),
+[`decisions/0007`](decisions/0007-minigame-challenge-accept.md)): a mini-game
+challenge used to start active immediately, dropping the opponent into a
+live match with no warning. It now starts `pending`; the opponent gets a
+live "Challenges waiting on you" card and Accept/Decline, reversing part of
+`decisions/0004`'s original reasoning once it was clear *trust-based
+logging* (a past claim) and *consent to a live match happening now* are
+different questions. The pending card's visibility is viewer-specific, which
+this app's broadcast mechanism can't target directly (the same limit
+Rock-Paper-Scissors hit) — solved with a signal-only event and a client
+reload rather than new per-viewer broadcast plumbing. Separately,
+`GET /me/stats` aggregates overall and per-game win/loss against every
+current friend into one dashboard, instead of checking one profile at a
+time; it counts every result regardless of witness/dispute status, same as
+the results list always has.
 
 ## Process discipline: corrections became rules, not one-off fixes
 
@@ -108,15 +128,15 @@ parallelism noise.
 
 ## Verification discipline
 
-`pnpm check` is 64/64 clean as of
-[`4ec0c83`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/4ec0c83)
-(58 pre-existing + 6 for witness confirmation). Every session this project
-has run has re-verified past what the test suite alone can show: SSH'ing
-into the live machine to confirm a migration actually landed on
-`/data/app.db`, re-opening the live SSE stream after a deploy that "wasn't
-about real-time" to watch a result still arrive on a second connection, and
-Playwright sessions across two real browser contexts to watch a mini-game
-board update live rather than trusting the render functions in isolation.
-`research-log/index0.md` is the running account of what each session
-actually tried, including the mistakes — this file is the current snapshot;
-that one is the history.
+`pnpm check` is 85/85 clean as of
+[`b122c66`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/b122c66).
+Every session this project has run has re-verified past what the test suite
+alone can show: SSH'ing into the live machine to confirm a migration
+actually landed on `/data/app.db`, re-opening the live SSE stream after a
+deploy that "wasn't about real-time" to watch a result still arrive on a
+second connection, and manual end-to-end `curl` walkthroughs of a new
+route (a pending challenge's accept/decline, the stats dashboard's actual
+numbers) rather than trusting the render functions in isolation once the
+spec suite passed. `research-log/index0.md` is the running account of what
+each session actually tried, including the mistakes — this file is the
+current snapshot; that one is the history.
