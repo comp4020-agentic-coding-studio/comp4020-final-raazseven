@@ -294,3 +294,75 @@ server/database, not per-group.
 Verified: `pnpm typecheck` clean, and the full suite (72/72, 64 pre-existing
 + 8 new in `spec/result-disputes.test.ts`) green against a single confirmed
 server process.
+
+## 2026-10-28
+
+Two separate requests in one session: a mini-game challenge drops the
+opponent into an active game with no warning and no way to decline, and
+there's nowhere to compare overall stats against every friend at once (only
+a one-friend-at-a-time head-to-head list buried on their profile page).
+Treated as two independent ADRs rather than one combined change, since
+they touch unrelated parts of the app and have unrelated histories.
+
+**Mini-game accept/decline
+(`decisions/0007-minigame-challenge-accept.md`).** Read `decisions/0004`
+first, since it had explicitly rejected an invite/accept step --- the
+reasoning there was about trust-based *logging* (anyone can already log a
+manual result against anyone else), which doesn't actually justify skipping
+consent for a *live* match happening right now with a second real person.
+Named that distinction explicitly in the new ADR rather than silently
+reversing 0004 without saying why the old reasoning didn't transfer.
+
+Added a third session status (`"pending"`, alongside `"active"`/`"finished"`)
+and a fourth (`"declined"`) in `src/minigames.ts`. The harder design question
+was how the challenged opponent finds out at all: a pending challenge's
+existence is viewer-specific (only the challenged person should see it),
+which is exactly the same limitation Rock-Paper-Scissors's hidden-choice
+broadcast hit in `decisions/0004` --- `src/live.ts`'s pub-sub has no
+per-recipient payload. Rather than inventing new per-viewer broadcast
+plumbing (which 0004 already rejected once, for the same reason), the fix
+here is a signal-only `"challenge"` event with an empty payload; the client
+just reloads the page on receiving it, so everyone with the group page open
+ends up seeing their own correct view (the pending-challenges card if
+they're the one challenged, nothing if not) without a targeted swap.
+
+Existing `spec/minigames.test.ts` needed real rework, not just new
+additions: every one of its 10 existing tests assumed a challenge started
+active and could be moved on immediately, since that was true before this
+change. Added an `acceptedChallenge()` helper (challenge + accept in one
+call) and swapped every existing test's `challenge()` call for it, so the
+tests about move mechanics stay focused on move mechanics rather than also
+re-deriving the accept step each time; the accept/decline gate itself got
+its own 6 new tests. Caught this by running the file in isolation first and
+reading exactly which assertions failed (8 of 10, all "expected 303 got
+200") rather than assuming the new feature broke something unrelated.
+
+**Friend-comparison stats dashboard (no new ADR --- additive read-only
+feature, not a design reversal).** `GET /me/stats`: every current "friend"
+(`friendsForUser()` in `db.ts`, same shared-group visibility boundary
+`decisions/0003`'s profile page already established) with an overall and
+per-game win-loss tally against each, computed in one SQL query per friend
+(`headToHeadTally()`, grouping `result_participants` by game and side)
+rather than re-deriving counts from the existing `headToHeadResults()`'s raw
+row list in JS. Confirmed with the person up front: disputed/pending
+results still count toward the tally (consistent with how the results list
+itself always shows every result regardless of status), and the dashboard
+is its own page off `/me` rather than inlined into the existing dashboard.
+
+Gotcha hit while writing the multi-group aggregation test: first draft tried
+to reuse `memberId()`'s name-prefix matching to resolve the same two
+accounts' ids across two different groups from one `register()`-style call,
+which doesn't work once two different accounts in two different groups both
+need resolving precisely by their own full (already-globally-unique) name
+rather than a shared prefix. Simplified by signing up both accounts
+directly with `signup()` first (capturing their real, final names), then
+joining each to both groups and resolving ids with the existing `memberId()`
+helper using the real name every time --- no new scraping helper needed, the
+existing one was already precise enough once the test stopped trying to
+economize on signups.
+
+Verified: `pnpm typecheck` clean, and the full suite (85/85, 78 pre-existing
++ 7 new in `spec/stats.test.ts`) green, including the full reworked
+`spec/minigames.test.ts` (16/16) and `spec/invariants.test.ts` (confirming
+the new README.md link to `/me/stats` doesn't break the `/readme/` heading
+check).
