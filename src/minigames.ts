@@ -108,6 +108,24 @@ export function pendingChallengesFor(groupId: number, userId: number): MinigameS
   );
 }
 
+/** Every pending challenge where `userId` is the challenged opponent, across
+ * EVERY group they're in --- not just the one group page they happen to be
+ * looking at. This is what the site-wide popup (decisions/0008) checks on
+ * every page load, and what `channelFor(userId)`'s live push tells the
+ * client to re-check. */
+export function allPendingChallengesFor(userId: number): MinigameSession[] {
+  return [...sessions.values()].filter((s) => s.status === "pending" && s.playerIds[1] === userId);
+}
+
+/** The per-user notification channel key (decisions/0008) --- parallel to
+ * `channelFor(gameId)` below, but keyed by the challenged person rather than
+ * the game, since a challenge notification has to reach that person no
+ * matter which page (or which group) they're currently on, not just the
+ * one group the challenge happened in. */
+export function userChannelFor(userId: number): string {
+  return `user:${userId}`;
+}
+
 export type ChallengeAnswer = { ok: true; session: MinigameSession } | { ok: false; error: string };
 
 /** Only the challenged opponent (playerIds[1]) can accept or decline --- the

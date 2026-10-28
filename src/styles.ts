@@ -314,6 +314,26 @@ export const baseStyles = `
     box-shadow: 0 12px 36px rgba(16, 24, 40, 0.16);
   }
 
+  /* The site-wide challenge popup (decisions/0008) --- a real <dialog>, not
+     a card sitting in the page flow, so it actually interrupts whatever the
+     viewer is doing instead of waiting to be scrolled to. #challenge-popup
+     is also .card (set in src/pages.ts), so it gets the same glass
+     background/border/shadow as everything else; this block only adds the
+     positioning and backdrop a <dialog> needs on top of that. */
+  dialog#challenge-popup {
+    max-width: min(28rem, calc(100vw - 2rem));
+    margin: auto;
+  }
+
+  dialog#challenge-popup:not([open]) {
+    display: none;
+  }
+
+  dialog#challenge-popup::backdrop {
+    background: rgba(16, 24, 40, 0.45);
+    backdrop-filter: blur(4px);
+  }
+
   .icon-chip {
     display: inline-flex;
     align-items: center;

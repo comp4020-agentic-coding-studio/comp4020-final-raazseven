@@ -48,6 +48,7 @@ import {
   validateAvatarUpload,
 } from "./avatars.ts";
 import {
+  challengePopupFragment,
   gameBoardFragment,
   gamePage,
   groupMatchesFragment,
@@ -66,6 +67,7 @@ import { renderReadme } from "./readme.ts";
 import { broadcast, subscribe } from "./live.ts";
 import {
   acceptChallenge,
+  allPendingChallengesFor,
   applyMove,
   channelFor,
   createChallenge,
@@ -73,6 +75,7 @@ import {
   GAME_NAMES,
   getSession,
   pendingChallengesFor,
+  userChannelFor,
   type GameKind,
 } from "./minigames.ts";
 
@@ -261,6 +264,47 @@ app.get("/me", async (req, reply) => {
   const user = currentUser(req);
   if (!user) return reply.redirect(`/login?next=${encodeURIComponent("/me")}`, 303);
   reply.type("text/html").send(mePage(user, membershipsForUser(user.id)));
+});
+
+/** One open connection per signed-in user, not per group --- a pending
+ * mini-game challenge has to reach whoever it was sent to no matter which
+ * page they're on (decisions/0008), unlike every other live event in this
+ * app, which is scoped to the one group it happened in. Same shape as
+ * `GET /g/:code/events` and the per-game stream, just keyed by user id
+ * instead of group code or game id. No group/game lookup needed here ---
+ * the channel key alone (`userChannelFor`) is enough to subscribe. */
+app.get("/me/events", async (req, reply) => {
+  const user = currentUser(req);
+  if (!user) return reply.code(401).send("sign in required");
+
+  reply.raw.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+  reply.raw.write(": connected\n\n");
+
+  const heartbeat = setInterval(() => reply.raw.write(": keep-alive\n\n"), 25_000);
+  const unsubscribe = subscribe(userChannelFor(user.id), (event) => {
+    reply.raw.write(sseLine(event.type, event.html));
+  });
+  req.raw.on("close", () => {
+    clearInterval(heartbeat);
+    unsubscribe();
+  });
+
+  reply.hijack();
+});
+
+/** The site-wide popup's content, fetched on every page load and after every
+ * live "challenge" ping (decisions/0008) --- a plain HTML fragment, not a
+ * full page, since the client only ever swaps this into the `<dialog>`
+ * already sitting in the page from `layout()`. Spans every group the user is
+ * in, unlike the per-group card on a group's own page. */
+app.get("/me/challenges", async (req, reply) => {
+  const user = currentUser(req);
+  if (!user) return reply.code(401).send("");
+  reply.type("text/html").send(challengePopupFragment(allPendingChallengesFor(user.id)));
 });
 
 app.post("/me/avatar", async (req, reply) => {
@@ -799,9 +843,13 @@ app.post<{ Params: { code: string }; Body: { opponentId: string; game: GameKind 
       group.id,
       `"${user.name}" challenged "${opponent.name}" to ${GAME_NAMES[game]} in "${group.name}"`,
     );
-    // Signal-only --- see decisions/0007 and src/live.ts for why this isn't
-    // a payload-carrying broadcast like every other event type.
+    // Signal-only --- see decisions/0007/0008 and src/live.ts for why this
+    // isn't a payload-carrying broadcast like every other event type. Two
+    // broadcasts, not one: the group's own channel (0007, drives that
+    // group's in-page card for anyone already looking at it) and the
+    // opponent's own per-user channel (0008, reaches them on ANY page).
     broadcast(group.code, { type: "challenge", html: "" });
+    broadcast(userChannelFor(opponent.id), { type: "challenge", html: "" });
     reply.redirect(`/g/${group.code}/games/${session.id}`, 303);
   },
 );
@@ -861,6 +909,10 @@ function respondToChallenge(
     html: gameBoardFragment(result.session, players, undefined, `/g/${group.code}/games/${result.session.id}`),
   });
   broadcast(group.code, { type: "challenge", html: "" });
+  // The acting user is the one who just answered (players[1]) --- their own
+  // other open tabs (e.g. a popup still showing on a second tab) need to
+  // clear too, not just the group page's card.
+  broadcast(userChannelFor(players[1].id), { type: "challenge", html: "" });
   reply.redirect(`/g/${group.code}/games/${result.session.id}`, 303);
 }
 

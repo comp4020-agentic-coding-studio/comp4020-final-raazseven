@@ -37,7 +37,9 @@ const layout = (title: string, body: string, script: string | undefined, user: U
       ${body}
     </main>
     <footer class="site"><a href="/readme/">what good means here</a></footer>
+    ${user ? `<dialog id="challenge-popup" class="card"></dialog>` : ""}
     ${script ? `<script>${script}</script>` : ""}
+    ${user ? `<script>${challengePopupScript}</script>` : ""}
   </body>
 </html>`;
 
@@ -700,6 +702,71 @@ function pendingChallengesCard(code: string, challenges: MinigameSession[]): str
     <ul class="results-list">${rows}</ul>
   </div>`;
 }
+
+/** The site-wide challenge popup's inner markup (decisions/0008) --- unlike
+ * `pendingChallengesCard` above (scoped to one group, rendered inline on
+ * that group's own page), this spans every group the viewer is in at once,
+ * since the whole point is reaching them no matter which page they're on.
+ * Each challenge needs its own group's code (not one shared `code` param,
+ * since the challenges here can come from different groups), so this looks
+ * the group up per challenge rather than taking it as a parameter. Returns
+ * empty string when there's nothing pending --- the client only shows the
+ * `<dialog>` when this has real content. This is also the `/me/challenges`
+ * fragment route's full response body (src/server.ts), fetched on page load
+ * and after every live "challenge" ping (see `challengePopupScript` below). */
+export function challengePopupFragment(challenges: MinigameSession[]): string {
+  if (challenges.length === 0) return "";
+  const rows = challenges
+    .map((session) => {
+      const challenger = getUserById(session.playerIds[0]);
+      const group = getGroupById(session.groupId);
+      if (!challenger || !group) return "";
+      const gamePath = `/g/${encodeURIComponent(group.code)}/games/${encodeURIComponent(session.id)}`;
+      return `<li class="result-row">
+        <div class="matchup">
+          ${avatarImg(userAvatarUrl(challenger.id), challenger.name)}
+          <span>${escapeHtml(challenger.name)} challenged you to ${escapeHtml(GAME_NAMES[session.game])} in ${escapeHtml(group.name)}</span>
+        </div>
+        <div class="witness-actions">
+          <form method="post" action="${gamePath}/accept" style="display:inline">
+            <button type="submit" class="btn-solid witness-btn">Accept</button>
+          </form>
+          <form method="post" action="${gamePath}/decline" style="display:inline">
+            <button type="submit" class="btn-ghost witness-btn">Decline</button>
+          </form>
+        </div>
+      </li>`;
+    })
+    .join("\n");
+  return `<h2 style="margin-top:0">You've been challenged</h2>
+    <ul class="results-list">${rows}</ul>`;
+}
+
+/** Opens `/me/events` (decisions/0008's per-user channel) once per page load
+ * and shows a real `<dialog>` popup --- not just a card sitting in a column
+ * --- whenever a challenge exists or newly arrives. Checks on load too (a
+ * `fetch` to `/me/challenges`, not just the live event), so refreshing or
+ * opening the app for the first time after being challenged still surfaces
+ * it, not only the live push. Only wired up for a signed-in user (the
+ * per-user channel needs an id to key on); every page goes through
+ * `layout()`, so this is the one place that has to work everywhere. */
+const challengePopupScript = `
+(function () {
+  var dialog = document.getElementById("challenge-popup");
+  if (!dialog) return;
+  function showIfAny(html) {
+    if (!html) { if (dialog.open) dialog.close(); return; }
+    dialog.innerHTML = html;
+    if (!dialog.open) dialog.showModal();
+  }
+  function check() {
+    fetch("/me/challenges").then(function (r) { return r.text(); }).then(showIfAny);
+  }
+  check();
+  var source = new EventSource("/me/events");
+  source.addEventListener("challenge", check);
+})();
+`;
 
 /** The "challenge someone to a mini-game" card (decisions/0004) --- sits
  * alongside the log-result/log-match/edit-profile cards in
