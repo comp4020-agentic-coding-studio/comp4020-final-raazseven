@@ -746,6 +746,77 @@ export function teamedUpResults(viewerId: number, otherId: number): Result[] {
     .all(viewerId, otherId, ...viewerGroupIds) as unknown as Result[];
 }
 
+/** Everyone `viewerId` currently shares at least one group with, across
+ * every group they're in --- "friend" in this app's sense (README: "niche
+ * by group, not by platform"), not a separate friends list anywhere. The
+ * pool a stats dashboard compares the viewer against. Deduplicated (the
+ * same person sharing two groups with the viewer appears once), excludes
+ * the viewer themselves, alphabetical by name for a stable dashboard order. */
+export function friendsForUser(viewerId: number): User[] {
+  return db
+    .prepare(
+      `SELECT DISTINCT users.* FROM memberships AS mine
+       JOIN memberships AS theirs ON theirs.group_id = mine.group_id AND theirs.user_id != mine.user_id
+       JOIN users ON users.id = theirs.user_id
+       WHERE mine.user_id = ?
+       ORDER BY users.name COLLATE NOCASE ASC`,
+    )
+    .all(viewerId) as unknown as User[];
+}
+
+export interface GameTally {
+  game: string;
+  wins: number;
+  losses: number;
+}
+
+export interface HeadToHeadTally {
+  overallWins: number;
+  overallLosses: number;
+  byGame: GameTally[];
+}
+
+/** Win/loss counts between `viewerId` and `otherId`, overall and broken down
+ * per game --- the actual comparison a stats dashboard needs, computed in
+ * SQL rather than re-deriving it from `headToHeadResults()`'s raw rows in
+ * JS, since every row already carries everything needed (which side the
+ * viewer was on) without a second query per result. Same visibility
+ * boundary as `headToHeadResults` (decisions/0003): only groups `viewerId`
+ * currently belongs to count, so leaving every shared group drops this to
+ * zero the same way it already drops the raw results list. */
+export function headToHeadTally(viewerId: number, otherId: number): HeadToHeadTally {
+  const viewerGroupIds = membershipsForUser(viewerId).map((m) => m.group.id);
+  if (viewerGroupIds.length === 0) return { overallWins: 0, overallLosses: 0, byGame: [] };
+  const placeholders = viewerGroupIds.map(() => "?").join(",");
+  const rows = db
+    .prepare(
+      `SELECT results.game AS game, viewer_side.side AS viewer_side, COUNT(*) AS count
+       FROM results
+       JOIN result_participants AS viewer_side ON viewer_side.result_id = results.id AND viewer_side.user_id = ?
+       JOIN result_participants AS other_side ON other_side.result_id = results.id AND other_side.user_id = ?
+       WHERE viewer_side.side != other_side.side AND results.group_id IN (${placeholders})
+       GROUP BY results.game, viewer_side.side
+       ORDER BY results.game COLLATE NOCASE ASC`,
+    )
+    .all(viewerId, otherId, ...viewerGroupIds) as Array<{ game: string; viewer_side: "winner" | "loser"; count: number }>;
+
+  const byGameMap = new Map<string, GameTally>();
+  let overallWins = 0;
+  let overallLosses = 0;
+  for (const row of rows) {
+    const entry = byGameMap.get(row.game) ?? { game: row.game, wins: 0, losses: 0 };
+    if (row.viewer_side === "winner") {
+      entry.wins += row.count;
+      overallWins += row.count;
+    } else {
+      entry.losses += row.count;
+      overallLosses += row.count;
+    }
+    byGameMap.set(row.game, entry);
+  }
+  return { overallWins, overallLosses, byGame: [...byGameMap.values()] };
+}
+
 /** Records one durable, server-side "who did what" row (crit 10: the
  * logging has to outlive the crit itself, not just live in flyctl's log
  * buffer). `actorUserId` is null for an action with no signed-in actor (a

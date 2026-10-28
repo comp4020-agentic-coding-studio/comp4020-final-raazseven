@@ -15,7 +15,10 @@ and wants the receipts instead of relying on memory and exaggeration.
 - **Fairness of record.** The log is the argument-ender. If it isn't logged,
   it didn't happen. The app's only real job is to make logging a result
   effortless enough that people actually do it, and keep it visible to
-  everyone in the group.
+  everyone in the group. Your [stats dashboard](/me/stats) turns that record
+  into the actual argument-ender: your overall and per-game record against
+  everyone you share a group with, in one place, not scattered across every
+  group's own results feed.
 - **Bragging rights, not a ranking system.** The point isn't a matchmaking
   ladder or a skill rating — it's reviving the locker-room "I've beaten you
   this many times" conversation, with a record behind it.

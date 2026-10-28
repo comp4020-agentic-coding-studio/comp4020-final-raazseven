@@ -1,4 +1,4 @@
-import type { Group, GroupMatch, MemberWithRole, MembershipWithGroup, Result, Role, Tag, User } from "./db.ts";
+import type { Group, GroupMatch, HeadToHeadTally, MemberWithRole, MembershipWithGroup, Result, Role, Tag, User } from "./db.ts";
 import { disputesForResult, getGroupById, getUserById, participantsForResult } from "./db.ts";
 import { curatedTagsByCategory } from "./db.ts";
 import { baseStyles, iconChip, logoMark, siteHeader } from "./styles.ts";
@@ -404,6 +404,76 @@ export function mePage(user: User, memberships: MembershipWithGroup[], avatarErr
       memberships.length === 0
         ? `<p class="empty">You're not in a group yet --- start one or join one above.</p>`
         : `<ul class="results-list">${groupRows}</ul>`
+    }
+    <h2>Your stats</h2>
+    <p class="lede" style="margin-top:0">Compare your record against everyone you share a group with, overall and per game.</p>
+    <a class="btn-ghost" href="/me/stats">View my stats</a>`,
+    undefined,
+    user,
+  );
+}
+
+/** One friend's row on the stats dashboard --- overall W-L, plus a per-game
+ * breakdown once there's more than one game between them (a single-game
+ * pair would just repeat the overall line twice, so it's skipped). */
+function statRow(friend: User, tally: HeadToHeadTally): string {
+  const played = tally.overallWins + tally.overallLosses;
+  const byGameLines =
+    tally.byGame.length > 1
+      ? `<ul class="stat-by-game">${tally.byGame
+          .map((g) => `<li><span class="game">${escapeHtml(g.game)}</span> ${g.wins}–${g.losses}</li>`)
+          .join("")}</ul>`
+      : "";
+  return `<li class="result-row">
+    <div class="matchup">
+      ${avatarImg(userAvatarUrl(friend.id), friend.name)}
+      <a href="/u/${friend.id}"><strong>${escapeHtml(friend.name)}</strong></a>
+      ${
+        played === 0
+          ? `<span class="lede" style="margin:0; font-size:0.85rem">no results logged against them yet</span>`
+          : `<span class="stat-record">${tally.overallWins}–${tally.overallLosses}</span>`
+      }
+    </div>
+    ${byGameLines}
+  </li>`;
+}
+
+/** The stats dashboard (`GET /me/stats`) --- overall and per-game win/loss
+ * against every current "friend" (anyone the viewer shares a group with,
+ * db.ts's friendsForUser()), sorted by games played so the people you
+ * actually compete with most surface first. Counts every logged result
+ * regardless of witness/dispute status (decisions/0005, 0006) --- the
+ * dashboard reflects what's logged, the same way the results list itself
+ * always shows every result. */
+export function statsPage(user: User, tallies: Array<{ friend: User; tally: HeadToHeadTally }>): string {
+  const sorted = [...tallies].sort((a, b) => {
+    const playedA = a.tally.overallWins + a.tally.overallLosses;
+    const playedB = b.tally.overallWins + b.tally.overallLosses;
+    return playedB - playedA || a.friend.name.localeCompare(b.friend.name);
+  });
+
+  const totalWins = tallies.reduce((sum, t) => sum + t.tally.overallWins, 0);
+  const totalLosses = tallies.reduce((sum, t) => sum + t.tally.overallLosses, 0);
+
+  return layout(
+    "My stats --- Score's in Check",
+    `<div class="profile-header">
+      ${avatarImg(userAvatarUrl(user.id), user.name, "lg")}
+      <div class="profile-header-text">
+        <h1 style="margin-bottom:0.1rem">My stats</h1>
+        <p class="lede" style="margin-top:0">${
+          totalWins + totalLosses === 0
+            ? "No results logged yet --- play something and log it."
+            : `Overall record across every friend: <strong>${totalWins}–${totalLosses}</strong>`
+        }</p>
+      </div>
+    </div>
+    <a class="back-link" href="/me">← Back to my groups</a>
+    <h2>Vs. everyone you share a group with</h2>
+    ${
+      sorted.length === 0
+        ? `<p class="empty">You don't share a group with anyone yet --- join or start one to find out.</p>`
+        : `<ul class="results-list">${sorted.map(({ friend, tally }) => statRow(friend, tally)).join("")}</ul>`
     }`,
     undefined,
     user,
@@ -576,6 +646,10 @@ const liveScript = (code: string) => `
     swapOptions("winner-select", e.data);
     swapOptions("loser-select", e.data);
   });
+  // A pending challenge's visibility is viewer-specific (decisions/0007) ---
+  // this pub-sub has no per-recipient payload, so a reload is the simplest
+  // way everyone with the page open ends up seeing their own correct view.
+  source.addEventListener("challenge", function () { location.reload(); });
 })();
 `;
 
@@ -587,6 +661,44 @@ function opponentOptionsFragment(members: MemberWithRole[], viewerId: number): s
     .map((m) => `<option value="${m.id}">${escapeHtml(m.name)}</option>`)
     .join("\n");
   return `<option value="" disabled selected>choose an opponent</option>${options}`;
+}
+
+/** "Challenges waiting on you" (decisions/0007) --- every pending challenge
+ * where the viewer is the one being challenged, each with its own
+ * accept/decline form. This is the actual fix for the gap 0007 names: before
+ * this card existed, nothing on the group page ever told you someone had
+ * challenged you, so you'd only find out by already being on the exact game
+ * URL. Rendered first in the actions column (ahead of the challenge-someone
+ * form itself) since answering an existing challenge is more pressing than
+ * starting a new one. Empty when there's nothing pending, same as every
+ * other conditional card on this page. */
+function pendingChallengesCard(code: string, challenges: MinigameSession[]): string {
+  if (challenges.length === 0) return "";
+  const rows = challenges
+    .map((session) => {
+      const challenger = getUserById(session.playerIds[0]);
+      const challengerName = challenger ? escapeHtml(challenger.name) : "someone";
+      const gamePath = `/g/${code}/games/${encodeURIComponent(session.id)}`;
+      return `<li class="result-row">
+        <div class="matchup">
+          ${challenger ? avatarImg(userAvatarUrl(challenger.id), challenger.name) : ""}
+          <span>${challengerName} challenged you to ${escapeHtml(GAME_NAMES[session.game])}</span>
+        </div>
+        <div class="witness-actions">
+          <form method="post" action="${gamePath}/accept" style="display:inline">
+            <button type="submit" class="btn-solid witness-btn">Accept</button>
+          </form>
+          <form method="post" action="${gamePath}/decline" style="display:inline">
+            <button type="submit" class="btn-ghost witness-btn">Decline</button>
+          </form>
+        </div>
+      </li>`;
+    })
+    .join("\n");
+  return `<div class="card">
+    <h2 style="margin-top:0">Challenges waiting on you</h2>
+    <ul class="results-list">${rows}</ul>
+  </div>`;
 }
 
 /** The "challenge someone to a mini-game" card (decisions/0004) --- sits
@@ -700,13 +812,42 @@ function rpsBoardHtml(session: MinigameSession, players: [User, User], viewerId:
     </form>`;
 }
 
-/** The inner markup of `#game-board` --- also what a live "board" event re-sends. */
+/** A still-pending challenge's board area --- no board exists to show yet
+ * (decisions/0007). The challenged opponent (playerIds[1]) gets
+ * accept/decline buttons; the challenger and anyone else watching just see
+ * who it's waiting on. `gamePath` is the game's own base path (not the move
+ * URL), since accept/decline are their own routes alongside `/move`. */
+function pendingChallengeHtml(session: MinigameSession, players: [User, User], viewerId: number | undefined, gamePath: string): string {
+  const [challenger, opponent] = players;
+  if (viewerId === opponent.id) {
+    return `<p class="lede" style="margin-top:0">${escapeHtml(challenger.name)} challenged you to ${escapeHtml(GAME_NAMES[session.game])}.</p>
+      <div class="witness-actions">
+        <form method="post" action="${gamePath}/accept">
+          <button type="submit" class="btn-solid">Accept</button>
+        </form>
+        <form method="post" action="${gamePath}/decline">
+          <button type="submit" class="btn-ghost">Decline</button>
+        </form>
+      </div>`;
+  }
+  return `<p class="lede" style="margin-top:0">Waiting for ${escapeHtml(opponent.name)} to accept...</p>`;
+}
+
+/** The inner markup of `#game-board` --- also what a live "board" event
+ * re-sends. Dispatches on status first (decisions/0007: a challenge has to
+ * be accepted before there's a board worth rendering at all), then on game
+ * kind for an active or finished session, same as before that change. */
 export function gameBoardFragment(
   session: MinigameSession,
   players: [User, User],
   viewerId: number | undefined,
-  moveUrl: string,
+  gamePath: string,
 ): string {
+  const moveUrl = `${gamePath}/move`;
+  if (session.status === "pending") return pendingChallengeHtml(session, players, viewerId, gamePath);
+  if (session.status === "declined") {
+    return `<p class="lede" style="margin-top:0">${escapeHtml(players[1].name)} declined this challenge.</p>`;
+  }
   return session.game === "tic-tac-toe"
     ? ticTacToeBoardHtml(session, players, moveUrl)
     : rpsBoardHtml(session, players, viewerId, moveUrl);
@@ -739,7 +880,7 @@ export function gamePage(
 ): string {
   const code = escapeHtml(group.code);
   const [challenger, opponent] = players;
-  const moveUrl = `/g/${code}/games/${encodeURIComponent(session.id)}/move`;
+  const gamePath = `/g/${code}/games/${encodeURIComponent(session.id)}`;
 
   return layout(
     `${GAME_NAMES[session.game]} --- ${group.name}`,
@@ -754,7 +895,7 @@ export function gamePage(
     </div>
     <div class="card">
       ${moveError ? `<p class="error-text">${escapeHtml(moveError)}</p>` : ""}
-      <div id="game-board">${gameBoardFragment(session, players, viewer?.id, moveUrl)}</div>
+      <div id="game-board">${gameBoardFragment(session, players, viewer?.id, gamePath)}</div>
     </div>`,
     gameLiveScript(group.code, session.id),
     viewer,
@@ -769,6 +910,7 @@ export function groupPage(
   groupTags: Tag[],
   user: User | undefined,
   role: Role | undefined,
+  pendingChallenges: MinigameSession[],
   resultError?: string,
   matchError?: string,
   avatarError?: string,
@@ -872,6 +1014,7 @@ export function groupPage(
       </div>`
     : "";
 
+  const challengesCard = isMember && user ? pendingChallengesCard(code, pendingChallenges) : "";
   const minigameCard = isMember && user ? minigameChallengeCard(code, members, user, challengeError) : "";
 
   const { tagIds: currentTagIds, customTags: currentCustomTags } = splitGroupTags(groupTags);
@@ -914,6 +1057,7 @@ export function groupPage(
     <div class="group-layout">
       <div class="group-layout-actions">
         ${joinOrAuthCard}
+        ${challengesCard}
         ${logResultCard}
         ${minigameCard}
         ${groupMatchCard}

@@ -527,6 +527,29 @@ export const baseStyles = `
     border-radius: 999px;
   }
 
+  .stat-record {
+    font-weight: 700;
+    font-size: 0.95rem;
+    color: var(--accent);
+  }
+
+  .stat-by-game {
+    list-style: none;
+    margin: 0.35rem 0 0;
+    padding: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem 0.9rem;
+    font-size: 0.8rem;
+    color: var(--muted);
+    width: 100%;
+  }
+
+  .stat-by-game .game {
+    font-weight: 600;
+    color: var(--text);
+  }
+
   .remove-btn {
     background: none;
     border: none;

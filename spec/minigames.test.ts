@@ -66,7 +66,12 @@ async function readUntil(
 
 /** Starts a challenge between two already-registered members and returns the
  * new game's path (e.g. "/g/ABC123/games/xYz..."), read off the redirect
- * Location header the same way createGroupAs() reads a new group's path. */
+ * Location header the same way createGroupAs() reads a new group's path.
+ * The session starts "pending" (decisions/0007) --- no move is legal until
+ * the opponent accepts, which is exactly what the dedicated accept/decline
+ * tests below exercise. Everything else in this file cares about move
+ * mechanics, not the accept step itself, so it uses `acceptedChallenge()`
+ * instead. */
 async function challenge(
   groupPath: string,
   challengerCookie: string,
@@ -83,6 +88,38 @@ async function challenge(
   const gamePath = res.headers.get("location");
   expect(gamePath, "starting a challenge should redirect to the new game's page").toBeTruthy();
   return gamePath!;
+}
+
+async function accept(gamePath: string, opponentCookie: string): Promise<Response> {
+  return fetch(new URL(`${gamePath}/accept`, baseUrl), {
+    method: "POST",
+    headers: { cookie: opponentCookie },
+    redirect: "manual",
+  });
+}
+
+async function decline(gamePath: string, opponentCookie: string): Promise<Response> {
+  return fetch(new URL(`${gamePath}/decline`, baseUrl), {
+    method: "POST",
+    headers: { cookie: opponentCookie },
+    redirect: "manual",
+  });
+}
+
+/** challenge() + accept(), for every test below that's really exercising
+ * move mechanics rather than the accept/decline step itself --- avoids
+ * repeating the same accept() call at the top of every one of them. */
+async function acceptedChallenge(
+  groupPath: string,
+  challengerCookie: string,
+  opponentCookie: string,
+  opponentId: string,
+  game: "tic-tac-toe" | "rock-paper-scissors",
+): Promise<string> {
+  const gamePath = await challenge(groupPath, challengerCookie, opponentId, game);
+  const acceptRes = await accept(gamePath, opponentCookie);
+  expect(acceptRes.status, "accepting a pending challenge should redirect back to the game").toBe(303);
+  return gamePath;
 }
 
 async function move(
@@ -105,7 +142,7 @@ it("two members play Tic-Tac-Toe to a forced win, and the win is logged as a res
   const xId = await memberId(groupPath, xCookie, "Xavi");
   const oId = await memberId(groupPath, xCookie, "Ozzy");
 
-  const gamePath = await challenge(groupPath, xCookie, oId, "tic-tac-toe");
+  const gamePath = await acceptedChallenge(groupPath, xCookie, oCookie, oId, "tic-tac-toe");
 
   // X takes the top row (0, 1, 2); O plays elsewhere, never blocking.
   expect((await move(gamePath, xCookie, { cell: "0" })).status).toBe(303);
@@ -133,7 +170,7 @@ it("a move out of turn is rejected and does not change the board", async () => {
   const oCookie = await register(groupPath, "Omar", "a-real-password");
   const oId = await memberId(groupPath, xCookie, "Omar");
 
-  const gamePath = await challenge(groupPath, xCookie, oId, "tic-tac-toe");
+  const gamePath = await acceptedChallenge(groupPath, xCookie, oCookie, oId, "tic-tac-toe");
 
   // X goes first --- O trying to move immediately is out of turn.
   const res = await move(gamePath, oCookie, { cell: "0" });
@@ -155,7 +192,7 @@ it("a move onto an already-filled cell is rejected", async () => {
   const oCookie = await register(groupPath, "Omar", "a-real-password");
   const oId = await memberId(groupPath, xCookie, "Omar");
 
-  const gamePath = await challenge(groupPath, xCookie, oId, "tic-tac-toe");
+  const gamePath = await acceptedChallenge(groupPath, xCookie, oCookie, oId, "tic-tac-toe");
   expect((await move(gamePath, xCookie, { cell: "0" })).status).toBe(303);
 
   const res = await move(gamePath, oCookie, { cell: "0" });
@@ -169,7 +206,7 @@ it("a forced Tic-Tac-Toe draw finishes the game without logging a result", async
   const oCookie = await register(groupPath, "Dana", "a-real-password");
   const oId = await memberId(groupPath, xCookie, "Dana");
 
-  const gamePath = await challenge(groupPath, xCookie, oId, "tic-tac-toe");
+  const gamePath = await acceptedChallenge(groupPath, xCookie, oCookie, oId, "tic-tac-toe");
 
   // A classic draw board:
   //   X O X
@@ -243,7 +280,7 @@ it("Rock-Paper-Scissors keeps a choice hidden until both players have chosen, th
   const scissorsCookie = await register(groupPath, "Skyler", "a-real-password");
   const scissorsId = await memberId(groupPath, rockCookie, "Skyler");
 
-  const gamePath = await challenge(groupPath, rockCookie, scissorsId, "rock-paper-scissors");
+  const gamePath = await acceptedChallenge(groupPath, rockCookie, scissorsCookie, scissorsId, "rock-paper-scissors");
 
   const eventsRes = await fetch(new URL(`${gamePath}/events`, baseUrl));
   expect(eventsRes.status).toBe(200);
@@ -274,7 +311,7 @@ it("rock beats scissors, and the win is logged as a result", async () => {
   const scissorsCookie = await register(groupPath, "Scout", "a-real-password");
   const scissorsId = await memberId(groupPath, rockCookie, "Scout");
 
-  const gamePath = await challenge(groupPath, rockCookie, scissorsId, "rock-paper-scissors");
+  const gamePath = await acceptedChallenge(groupPath, rockCookie, scissorsCookie, scissorsId, "rock-paper-scissors");
   expect((await move(gamePath, rockCookie, { choice: "rock" })).status).toBe(303);
   expect((await move(gamePath, scissorsCookie, { choice: "scissors" })).status).toBe(303);
 
@@ -293,7 +330,7 @@ it("a tied Rock-Paper-Scissors round finishes the game without logging a result"
   const bCookie = await register(groupPath, "Billie", "a-real-password");
   const bId = await memberId(groupPath, aCookie, "Billie");
 
-  const gamePath = await challenge(groupPath, aCookie, bId, "rock-paper-scissors");
+  const gamePath = await acceptedChallenge(groupPath, aCookie, bCookie, bId, "rock-paper-scissors");
   expect((await move(gamePath, aCookie, { choice: "paper" })).status).toBe(303);
   expect((await move(gamePath, bCookie, { choice: "paper" })).status).toBe(303);
 
@@ -321,7 +358,7 @@ it("a finished mini-game's result reaches the group's own existing live channel"
   const oCookie = await register(groupPath, "Logan", "a-real-password");
   const oId = await memberId(groupPath, xCookie, "Logan");
 
-  const gamePath = await challenge(groupPath, xCookie, oId, "tic-tac-toe");
+  const gamePath = await acceptedChallenge(groupPath, xCookie, oCookie, oId, "tic-tac-toe");
 
   const eventsRes = await fetch(new URL(`${groupPath}/events`, baseUrl));
   expect(eventsRes.status).toBe(200);
@@ -343,4 +380,129 @@ it("a finished mini-game's result reaches the group's own existing live channel"
   );
   expect(streamed).toContain("Tic-Tac-Toe");
   await pump.stop();
+});
+
+// decisions/0007-minigame-challenge-accept.md: a challenge starts "pending",
+// not "active" --- no move is legal, no board even shows, until the
+// challenged opponent explicitly accepts. These tests cover that gate
+// directly; every test above exercises move mechanics using
+// acceptedChallenge(), which accepts immediately so those tests aren't
+// about the accept step itself.
+
+it("a move is rejected while a challenge is still pending", async () => {
+  const groupPath = await createGroup(`spec-minigame-pending-move-${Date.now()}`);
+  const xCookie = await register(groupPath, "Pia", "a-real-password");
+  const oCookie = await register(groupPath, "Owen", "a-real-password");
+  const oId = await memberId(groupPath, xCookie, "Owen");
+
+  const gamePath = await challenge(groupPath, xCookie, oId, "tic-tac-toe");
+
+  const res = await move(gamePath, oCookie, { cell: "0" });
+  expect(res.status).toBe(200); // re-rendered with an error, not redirected
+  expect(await res.text()).toContain("hasn't been accepted yet");
+});
+
+it("the challenged opponent sees accept/decline on the group page before answering", async () => {
+  const groupPath = await createGroup(`spec-minigame-pending-visible-${Date.now()}`);
+  const xCookie = await register(groupPath, "Priya", "a-real-password");
+  const oCookie = await register(groupPath, "Omar", "a-real-password");
+  const oId = await memberId(groupPath, xCookie, "Omar");
+
+  await challenge(groupPath, xCookie, oId, "tic-tac-toe");
+
+  const opponentView = await (await fetch(new URL(groupPath, baseUrl), { headers: { cookie: oCookie } })).text();
+  expect(opponentView).toContain("Challenges waiting on you");
+  expect(opponentView).toContain("Priya");
+
+  // The challenger themselves shouldn't see a challenge waiting on THEM ---
+  // it's their own outgoing challenge, not an incoming one.
+  const challengerView = await (await fetch(new URL(groupPath, baseUrl), { headers: { cookie: xCookie } })).text();
+  expect(challengerView).not.toContain("Challenges waiting on you");
+});
+
+it("accepting a pending challenge lets the game start", async () => {
+  const groupPath = await createGroup(`spec-minigame-accept-${Date.now()}`);
+  const xCookie = await register(groupPath, "Ada", "a-real-password");
+  const oCookie = await register(groupPath, "Omar", "a-real-password");
+  const oId = await memberId(groupPath, xCookie, "Omar");
+
+  const gamePath = await challenge(groupPath, xCookie, oId, "tic-tac-toe");
+
+  const acceptRes = await accept(gamePath, oCookie);
+  expect(acceptRes.status).toBe(303);
+
+  // The pending-challenges card should be gone from the opponent's view now.
+  const opponentView = await (await fetch(new URL(groupPath, baseUrl), { headers: { cookie: oCookie } })).text();
+  expect(opponentView).not.toContain("Challenges waiting on you");
+
+  // And a move is now legal.
+  expect((await move(gamePath, xCookie, { cell: "0" })).status).toBe(303);
+});
+
+it("only the challenged opponent can accept or decline, not the challenger or a bystander", async () => {
+  const groupPath = await createGroup(`spec-minigame-wrong-acceptor-${Date.now()}`);
+  const xCookie = await register(groupPath, "Nadia", "a-real-password");
+  const oCookie = await register(groupPath, "Omar", "a-real-password");
+  const bystanderCookie = await register(groupPath, "Billie", "a-real-password");
+  const oId = await memberId(groupPath, xCookie, "Omar");
+
+  const gamePath = await challenge(groupPath, xCookie, oId, "tic-tac-toe");
+
+  const challengerAttempt = await accept(gamePath, xCookie);
+  expect(challengerAttempt.status).toBe(200); // re-rendered with an error, not redirected
+  expect(await challengerAttempt.text()).toContain("only the challenged player can accept or decline");
+
+  const bystanderAttempt = await accept(gamePath, bystanderCookie);
+  expect(bystanderAttempt.status).toBe(200);
+  expect(await bystanderAttempt.text()).toContain("only the challenged player can accept or decline");
+
+  // Still pending after both wrong attempts --- a move still isn't legal.
+  const moveRes = await move(gamePath, xCookie, { cell: "0" });
+  expect(moveRes.status).toBe(200);
+  expect(await moveRes.text()).toContain("hasn't been accepted yet");
+});
+
+it("declining a challenge ends it without logging anything, and shows the decline on the game page", async () => {
+  const groupPath = await createGroup(`spec-minigame-decline-${Date.now()}`);
+  const xCookie = await register(groupPath, "Dev", "a-real-password");
+  const oCookie = await register(groupPath, "Omar", "a-real-password");
+  const oId = await memberId(groupPath, xCookie, "Omar");
+
+  const gamePath = await challenge(groupPath, xCookie, oId, "tic-tac-toe");
+
+  const declineRes = await decline(gamePath, oCookie);
+  expect(declineRes.status).toBe(303);
+
+  const gameHtml = await (await fetch(new URL(gamePath, baseUrl))).text();
+  expect(gameHtml).toContain("declined");
+
+  // A move is rejected with the specific decline message, not the generic
+  // "already finished" one --- the game was never played, not completed.
+  const moveRes = await move(gamePath, xCookie, { cell: "0" });
+  expect(moveRes.status).toBe(200);
+  expect(await moveRes.text()).toContain("was declined");
+
+  // Nothing was logged.
+  const groupHtml = await (await fetch(new URL(groupPath, baseUrl))).text();
+  expect(groupHtml, "a declined challenge should not appear in the group's results feed").toContain(
+    "No results yet. Be the first to log one.",
+  );
+
+  // And it's gone from the opponent's pending-challenges card.
+  const opponentView = await (await fetch(new URL(groupPath, baseUrl), { headers: { cookie: oCookie } })).text();
+  expect(opponentView).not.toContain("Challenges waiting on you");
+});
+
+it("a declined challenge can't later be accepted", async () => {
+  const groupPath = await createGroup(`spec-minigame-decline-then-accept-${Date.now()}`);
+  const xCookie = await register(groupPath, "Remy", "a-real-password");
+  const oCookie = await register(groupPath, "Omar", "a-real-password");
+  const oId = await memberId(groupPath, xCookie, "Omar");
+
+  const gamePath = await challenge(groupPath, xCookie, oId, "tic-tac-toe");
+  expect((await decline(gamePath, oCookie)).status).toBe(303);
+
+  const lateAccept = await accept(gamePath, oCookie);
+  expect(lateAccept.status).toBe(200); // re-rendered with an error, not redirected
+  expect(await lateAccept.text()).toContain("already been answered");
 });

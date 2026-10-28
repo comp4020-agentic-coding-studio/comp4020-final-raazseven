@@ -35,7 +35,12 @@ export interface MinigameSession {
   game: GameKind;
   playerIds: [number, number]; // [challenger, opponent]
   state: TicTacToeState | RockPaperScissorsState;
-  status: "active" | "finished";
+  // "pending" until the challenged opponent accepts (decisions/0007) --- no
+  // move is legal yet, and the board doesn't even exist meaningfully until
+  // accept() builds it. "declined" is terminal, like "finished": nothing
+  // further happens to the session, and (per decisions/0007) nothing gets
+  // logged, the same as a draw never does.
+  status: "pending" | "active" | "finished" | "declined";
   winnerId: number | null; // null for a draw or while active
   isDraw: boolean;
   createdAt: number;
@@ -78,7 +83,7 @@ export function createChallenge(
     game,
     playerIds: [challengerId, opponentId],
     state: game === "tic-tac-toe" ? freshTicTacToeState() : freshRockPaperScissorsState(),
-    status: "active",
+    status: "pending",
     winnerId: null,
     isDraw: false,
     createdAt: Date.now(),
@@ -89,6 +94,47 @@ export function createChallenge(
 
 export function getSession(id: string): MinigameSession | undefined {
   return sessions.get(id);
+}
+
+/** Every pending challenge in a group where `userId` is the challenged
+ * opponent --- the "challenges waiting on you" card on the group page
+ * (decisions/0007). Not indexed by group since the number of concurrently
+ * pending challenges in one group is always small; a linear scan over the
+ * in-memory session map is the same cost tradeoff sweepStaleSessions()
+ * already accepts. */
+export function pendingChallengesFor(groupId: number, userId: number): MinigameSession[] {
+  return [...sessions.values()].filter(
+    (s) => s.groupId === groupId && s.status === "pending" && s.playerIds[1] === userId,
+  );
+}
+
+export type ChallengeAnswer = { ok: true; session: MinigameSession } | { ok: false; error: string };
+
+/** Only the challenged opponent (playerIds[1]) can accept or decline --- the
+ * challenger has no "cancel" button here, same as this app has no edit path
+ * for anything else once submitted. */
+function requirePendingOpponent(id: string, actingUserId: number): ChallengeAnswer | MinigameSession {
+  const session = sessions.get(id);
+  if (!session) return { ok: false, error: "that challenge no longer exists" };
+  if (session.status !== "pending") return { ok: false, error: "this challenge has already been answered" };
+  if (session.playerIds[1] !== actingUserId) {
+    return { ok: false, error: "only the challenged player can accept or decline" };
+  }
+  return session;
+}
+
+export function acceptChallenge(id: string, actingUserId: number): ChallengeAnswer {
+  const result = requirePendingOpponent(id, actingUserId);
+  if ("ok" in result) return result;
+  result.status = "active";
+  return { ok: true, session: result };
+}
+
+export function declineChallenge(id: string, actingUserId: number): ChallengeAnswer {
+  const result = requirePendingOpponent(id, actingUserId);
+  if ("ok" in result) return result;
+  result.status = "declined";
+  return { ok: true, session: result };
 }
 
 export function channelFor(id: string): string {
@@ -138,6 +184,10 @@ export function applyMove(
 ): MoveResult {
   const session = sessions.get(id);
   if (!session) return { ok: false, error: "that game no longer exists" };
+  if (session.status === "pending") {
+    return { ok: false, error: "this challenge hasn't been accepted yet" };
+  }
+  if (session.status === "declined") return { ok: false, error: "this challenge was declined" };
   if (session.status !== "active") return { ok: false, error: "this game has already finished" };
   if (!session.playerIds.includes(actingUserId)) {
     return { ok: false, error: "you're not a player in this game" };

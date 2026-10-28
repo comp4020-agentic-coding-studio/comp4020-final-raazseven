@@ -8,7 +8,13 @@
 export interface LiveEvent {
   // "board" is a mini-game's board state (src/minigames.ts), broadcast on
   // its own per-game channel (channelFor()) rather than a group's channel.
-  type: "result" | "group-match" | "member" | "board";
+  // "challenge" (decisions/0007) is a signal-only ping with no payload ---
+  // whether a pending challenge even exists is viewer-specific (only the
+  // challenged opponent sees one), and this pub-sub has no per-recipient
+  // payload concept (the same limitation Rock-Paper-Scissors's hidden choice
+  // ran into in decisions/0004), so the client just reloads on receiving it
+  // rather than this broadcasting HTML meant for one specific subscriber.
+  type: "result" | "group-match" | "member" | "board" | "challenge";
   html: string;
 }
 

@@ -7,11 +7,13 @@ import {
   addResult,
   addResultDispute,
   createGroup,
+  friendsForUser,
   getGroupByCode,
   getResultById,
   getUserById,
   groupMatchesForGroup,
   headToHeadResults,
+  headToHeadTally,
   InvalidCredentialsError,
   joinGroup,
   loginUser,
@@ -58,10 +60,21 @@ import {
   profilePage,
   resultsListFragment,
   signupPage,
+  statsPage,
 } from "./pages.ts";
 import { renderReadme } from "./readme.ts";
 import { broadcast, subscribe } from "./live.ts";
-import { applyMove, channelFor, createChallenge, GAME_NAMES, getSession, type GameKind } from "./minigames.ts";
+import {
+  acceptChallenge,
+  applyMove,
+  channelFor,
+  createChallenge,
+  declineChallenge,
+  GAME_NAMES,
+  getSession,
+  pendingChallengesFor,
+  type GameKind,
+} from "./minigames.ts";
 
 const app = Fastify({ logger: true });
 await app.register(formbody);
@@ -134,6 +147,7 @@ function renderGroupPage(
     tagsForGroup(group.id),
     user,
     membership?.role,
+    user ? pendingChallengesFor(group.id, user.id) : [],
     errors.resultError,
     errors.matchError,
     errors.avatarError,
@@ -267,6 +281,23 @@ app.post("/me/avatar", async (req, reply) => {
     throw err;
   }
   reply.redirect("/me", 303);
+});
+
+/** Compare-with-every-friend stats dashboard --- "friend" here is anyone you
+ * currently share a group with (friendsForUser(), same shape as the profile
+ * page's own shared-group check, decisions/0003). Overall and per-game
+ * tallies count every result regardless of witness/dispute status
+ * (decisions/0005, 0006): the dashboard reflects what's actually logged, the
+ * same way the results list itself always shows every result --- a dispute
+ * is visible metadata layered on top, not a reason to drop something from
+ * the tally. */
+app.get("/me/stats", async (req, reply) => {
+  const user = currentUser(req);
+  if (!user) return reply.redirect(`/login?next=${encodeURIComponent("/me/stats")}`, 303);
+
+  const friends = friendsForUser(user.id);
+  const tallies = friends.map((friend) => ({ friend, tally: headToHeadTally(user.id, friend.id) }));
+  reply.type("text/html").send(statsPage(user, tallies));
 });
 
 app.get<{ Params: { id: string } }>("/users/:id/avatar", async (req, reply) => {
@@ -768,6 +799,9 @@ app.post<{ Params: { code: string }; Body: { opponentId: string; game: GameKind 
       group.id,
       `"${user.name}" challenged "${opponent.name}" to ${GAME_NAMES[game]} in "${group.name}"`,
     );
+    // Signal-only --- see decisions/0007 and src/live.ts for why this isn't
+    // a payload-carrying broadcast like every other event type.
+    broadcast(group.code, { type: "challenge", html: "" });
     reply.redirect(`/g/${group.code}/games/${session.id}`, 303);
   },
 );
@@ -778,6 +812,64 @@ app.get<{ Params: { code: string; id: string } }>("/g/:code/games/:id", async (r
   const { group, session } = found;
   const viewer = currentUser(req);
   reply.type("text/html").send(gamePage(group, session!, gamePlayers(session!), viewer));
+});
+
+/** Shared by accept/decline below --- both need the same "no such game, not
+ * signed in" handling before dispatching to the actual minigames.ts call,
+ * and both broadcast the same two things on success: the game's own board
+ * (so anyone already on the game page sees the new state without a reload)
+ * and a signal-only "challenge" ping on the group's channel (so the pending-
+ * challenges card updates everywhere else, decisions/0007). */
+function respondToChallenge(
+  req: FastifyRequest,
+  reply: FastifyReply,
+  code: string,
+  id: string,
+  answer: (id: string, actingUserId: number) => ReturnType<typeof acceptChallenge>,
+  actionName: "minigame.accept" | "minigame.decline",
+  verb: "accepted" | "declined",
+): void {
+  const found = requireGameSession(code, id);
+  if (!found) {
+    reply.code(404).send("no such game");
+    return;
+  }
+  const { group, session } = found;
+
+  const user = currentUser(req);
+  if (!user) {
+    reply.type("text/html").send(gamePage(group, session!, gamePlayers(session!), undefined, "you need to be signed in"));
+    return;
+  }
+
+  const result = answer(session!.id, user.id);
+  if (!result.ok) {
+    reply.type("text/html").send(gamePage(group, session!, gamePlayers(session!), user, result.error));
+    return;
+  }
+
+  const players = gamePlayers(result.session);
+  record(
+    req,
+    user.id,
+    actionName,
+    group.id,
+    `"${user.name}" ${verb} ${GAME_NAMES[result.session.game]} challenge from "${players[0].name}" in "${group.name}"`,
+  );
+  broadcast(channelFor(result.session.id), {
+    type: "board",
+    html: gameBoardFragment(result.session, players, undefined, `/g/${group.code}/games/${result.session.id}`),
+  });
+  broadcast(group.code, { type: "challenge", html: "" });
+  reply.redirect(`/g/${group.code}/games/${result.session.id}`, 303);
+}
+
+app.post<{ Params: { code: string; id: string } }>("/g/:code/games/:id/accept", async (req, reply) => {
+  respondToChallenge(req, reply, req.params.code, req.params.id, acceptChallenge, "minigame.accept", "accepted");
+});
+
+app.post<{ Params: { code: string; id: string } }>("/g/:code/games/:id/decline", async (req, reply) => {
+  respondToChallenge(req, reply, req.params.code, req.params.id, declineChallenge, "minigame.decline", "declined");
 });
 
 // Server-sent events for one mini-game's board --- identical shape to
@@ -839,7 +931,7 @@ app.post<{ Params: { code: string; id: string }; Body: { cell?: string; choice?:
     if (result.session.game === "tic-tac-toe" || result.justFinished) {
       broadcast(channelFor(session!.id), {
         type: "board",
-        html: gameBoardFragment(result.session, players, undefined, `/g/${group.code}/games/${session!.id}/move`),
+        html: gameBoardFragment(result.session, players, undefined, `/g/${group.code}/games/${session!.id}`),
       });
     }
 

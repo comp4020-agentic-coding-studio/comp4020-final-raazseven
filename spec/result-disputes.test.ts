@@ -216,6 +216,15 @@ it("a mini-game's auto-logged result also shows a logger and accepts a dispute f
   expect(challengeRes.status).toBe(303);
   const gamePath = challengeRes.headers.get("location")!;
 
+  // A challenge starts pending (decisions/0007) --- the opponent has to
+  // accept before any move is legal.
+  const acceptRes = await fetch(new URL(`${gamePath}/accept`, baseUrl), {
+    method: "POST",
+    headers: { cookie: opponentCookie },
+    redirect: "manual",
+  });
+  expect(acceptRes.status).toBe(303);
+
   // Challenger (X) wins the top row: cells 0, 1, 2. Opponent (O) plays
   // elsewhere, losing before blocking the third X.
   const xMoves = [0, 1, 2];
