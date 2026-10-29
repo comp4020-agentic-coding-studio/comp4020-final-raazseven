@@ -413,3 +413,62 @@ both surface in one fetch.
 
 Verified: `pnpm typecheck` clean, full suite (94/94, 85 pre-existing + 9
 new) green.
+
+## 2026-10-29 (continued)
+
+Reported directly: accepting a challenge sometimes left the accepting
+player back on the group page instead of being taken to the game. Didn't
+trust the server-side code alone to explain this --- set up real
+browser-level reproduction first, since a client-side navigation race isn't
+something an HTTP-level `fetch` assertion can see. `playwright-core` wasn't
+installed in the project; installed it to a scratch `/tmp` directory (same
+technique as the liquid-glass session: `apt-get download` for
+`libnspr4`/`libnss3`/`libasound2t64` without root, `dpkg-deb -x` to extract,
+`LD_LIBRARY_PATH` pointed at the extracted `.so` files) and launched the
+already-cached Chromium build with two real browser contexts.
+
+Found it on the first reproduction, confirmed consistent across 5 repeated
+runs: `POST /g/:code/games/:id/accept` broadcasts a signal-only "challenge"
+ping on the group's own channel as part of answering the challenge (this is
+intentional --- other viewers on that group's page need to know the
+challenge was resolved) --- but the group page's own live-update script
+handled that exact ping with `location.reload()`. If the accepting player's
+browser was still sitting on the group page (the normal case, since the
+Accept button lives there), that reload competed with the browser's own
+pending navigation to the `303` redirect's target, and sometimes won,
+landing them back on the group page instead of the game. A self-inflicted
+race: the broadcast a user's own action triggers collided with that same
+action's own result.
+
+Wrote `decisions/0009-challenge-ping-no-longer-reloads-the-page.md` before
+fixing it. Fix: replaced the full-page `location.reload()` with a targeted
+fetch-and-swap, the same pattern every other live event in this app already
+uses (and the one the site-wide popup from the previous session already got
+right, since it was always a `fetch`, never a reload) --- a new
+`GET /g/:code/challenges` fragment route (mirroring `GET /me/challenges`),
+swapped into a new `<div id="challenges-card">` wrapper. Re-ran the exact
+same two-browser reproduction 5 times post-fix: 5/5 landed correctly on the
+game page, both via the popup's Accept button and the in-page card's (closing
+the modal first, since a real `<dialog>` opened with `showModal()` correctly
+blocks pointer events on the page behind it --- confirmed this is expected
+`<dialog>` behavior, not a second bug, before writing a test that assumed it
+was).
+
+Gotcha hit writing the regression test: a first draft asserted
+`expect(html).not.toContain("location.reload()")` to prove the bug was
+fixed, and it failed --- because the exact string `location.reload()` is
+still present in the file, inside the *explanatory comment* describing why
+the old behavior was wrong. Fixed by asserting on the actual call-site
+shape via a regex (`addEventListener("challenge", function () {
+location.reload(); })`) instead of a bare substring, which doesn't
+distinguish code from a comment describing that code's history. Same shape
+of mistake as two earlier sessions' "checking a string appears is weaker
+than checking where/how it appears" gotchas (the CSS-class-definition one
+from the witness-confirmation session, and this makes a third instance of
+the same underlying lesson not fully generalizing across sessions).
+
+Verified: `pnpm typecheck` clean, full suite (98/98, 94 pre-existing + 4
+new in `spec/challenge-notifications.test.ts`) green, plus the real
+two-browser reproduction re-run 5 times post-fix as the actual check that
+matters here, since the bug itself was never visible at the HTTP-assertion
+level in the first place.
