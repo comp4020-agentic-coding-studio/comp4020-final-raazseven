@@ -121,6 +121,88 @@ it("declining a challenge clears it from /me/challenges", async () => {
   expect(after).toBe("");
 });
 
+// decisions/0009-challenge-ping-no-longer-reloads-the-page.md: the group
+// page's own live "challenge" listener used to call location.reload() ---
+// which raced the accepting player's own in-flight navigation to the game
+// page the accept route redirects to, sometimes landing them back on the
+// group page instead. Fixed by fetching GET /g/:code/challenges (a
+// per-group, per-viewer fragment, same shape as /me/challenges) and
+// swapping it in, rather than reloading the whole page. These check the
+// new route's contract directly; the race itself needs a real browser to
+// reproduce (verified by hand with two headless-Chromium contexts), not
+// something a plain HTTP request can assert on.
+
+it("the group page's live script no longer reloads on a challenge ping", async () => {
+  const groupPath = await createGroup(`spec-notif-group-${Date.now()}-no-reload`);
+  const cookie = await register(groupPath, "Priya", "a-real-password");
+  const html = await (await fetch(new URL(groupPath, baseUrl), { headers: { cookie } })).text();
+  // The old buggy behaviour was a bare `location.reload();` call inside the
+  // "challenge" listener --- checking for that exact call shape (not just
+  // the substring "location.reload()", which also appears in this file's
+  // own explanatory code comment) is what actually distinguishes "still
+  // calls it" from "mentions why it used to."
+  expect(html).not.toMatch(/addEventListener\("challenge",\s*function\s*\(\)\s*\{\s*location\.reload\(\);\s*\}\)/);
+  expect(html).toContain(`fetch("/g/${groupPath.split("/").pop()}/challenges")`);
+});
+
+it("GET /g/:code/challenges returns this viewer's own pending challenge, scoped to this one group", async () => {
+  const groupPath = await createGroup(`spec-notif-group-${Date.now()}-group-fragment`);
+  const challengerCookie = await register(groupPath, "Priya", "a-real-password");
+  const opponentCookie = await register(groupPath, "Marcus", "a-real-password");
+  const opponentId = await memberId(groupPath, challengerCookie, "Marcus");
+
+  const before = await (await fetch(new URL(`${groupPath}/challenges`, baseUrl), { headers: { cookie: opponentCookie } })).text();
+  expect(before).toBe("");
+
+  await challenge(groupPath, challengerCookie, opponentId);
+
+  const after = await (await fetch(new URL(`${groupPath}/challenges`, baseUrl), { headers: { cookie: opponentCookie } })).text();
+  expect(after).toContain("Challenges waiting on you");
+  expect(after).toContain("Priya");
+
+  // The challenger themselves see nothing --- it's their own outgoing
+  // challenge, not an incoming one.
+  const challengerView = await (
+    await fetch(new URL(`${groupPath}/challenges`, baseUrl), { headers: { cookie: challengerCookie } })
+  ).text();
+  expect(challengerView).toBe("");
+});
+
+it("GET /g/:code/challenges clears once the challenge is accepted", async () => {
+  const groupPath = await createGroup(`spec-notif-group-${Date.now()}-group-fragment-accept`);
+  const challengerCookie = await register(groupPath, "Priya", "a-real-password");
+  const opponentCookie = await register(groupPath, "Marcus", "a-real-password");
+  const opponentId = await memberId(groupPath, challengerCookie, "Marcus");
+
+  const gamePath = await challenge(groupPath, challengerCookie, opponentId);
+  const beforeAccept = await (await fetch(new URL(`${groupPath}/challenges`, baseUrl), { headers: { cookie: opponentCookie } })).text();
+  expect(beforeAccept).toContain("Challenges waiting on you");
+
+  const acceptRes = await fetch(new URL(`${gamePath}/accept`, baseUrl), {
+    method: "POST",
+    headers: { cookie: opponentCookie },
+    redirect: "manual",
+  });
+  expect(acceptRes.status).toBe(303);
+  // The actual bug this guards against: the redirect target has to be the
+  // game, not the group page it would have bounced back to under the old
+  // location.reload() behaviour.
+  expect(acceptRes.headers.get("location")).toBe(gamePath);
+
+  const afterAccept = await (await fetch(new URL(`${groupPath}/challenges`, baseUrl), { headers: { cookie: opponentCookie } })).text();
+  expect(afterAccept).toBe("");
+});
+
+it("GET /g/:code/challenges for a signed-out visitor or a nonexistent group is handled safely", async () => {
+  const groupPath = await createGroup(`spec-notif-group-${Date.now()}-signed-out`);
+  const signedOutRes = await fetch(new URL(`${groupPath}/challenges`, baseUrl));
+  expect(signedOutRes.status).toBe(200);
+  expect(await signedOutRes.text()).toBe("");
+
+  const missingRes = await fetch(new URL("/g/ZZZZZZ/challenges", baseUrl));
+  expect(missingRes.status).toBe(404);
+});
+
 it("challenges from two different groups both show up in one /me/challenges fetch", async () => {
   const challengerName = uniqueName("Priya");
   const opponentName = uniqueName("Marcus");

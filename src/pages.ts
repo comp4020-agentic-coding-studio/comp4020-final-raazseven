@@ -649,9 +649,21 @@ const liveScript = (code: string) => `
     swapOptions("loser-select", e.data);
   });
   // A pending challenge's visibility is viewer-specific (decisions/0007) ---
-  // this pub-sub has no per-recipient payload, so a reload is the simplest
-  // way everyone with the page open ends up seeing their own correct view.
-  source.addEventListener("challenge", function () { location.reload(); });
+  // this pub-sub has no per-recipient payload, so this re-fetches the
+  // viewer's own correct card rather than swapping in HTML meant for
+  // whoever triggered the broadcast. A full location.reload() here used to
+  // race the acceptor's OWN in-flight navigation away from this exact page:
+  // accepting broadcasts this same event on the group's channel, so the
+  // acceptor's still-open group-page tab would sometimes reload itself
+  // right back to the group page instead of letting the accept route's
+  // redirect land on the game page (decisions/0009). A targeted fragment
+  // fetch never competes with that navigation the way reloading the whole
+  // page did.
+  source.addEventListener("challenge", function () {
+    fetch(${JSON.stringify(`/g/${encodeURIComponent(code)}/challenges`)})
+      .then(function (r) { return r.text(); })
+      .then(function (html) { swapInner("challenges-card", html); });
+  });
 })();
 `;
 
@@ -673,8 +685,10 @@ function opponentOptionsFragment(members: MemberWithRole[], viewerId: number): s
  * URL. Rendered first in the actions column (ahead of the challenge-someone
  * form itself) since answering an existing challenge is more pressing than
  * starting a new one. Empty when there's nothing pending, same as every
- * other conditional card on this page. */
-function pendingChallengesCard(code: string, challenges: MinigameSession[]): string {
+ * other conditional card on this page. Exported so `GET /g/:code/challenges`
+ * (src/server.ts) can re-render it standalone for the live fragment swap
+ * `liveScript`'s "challenge" listener fetches (decisions/0009). */
+export function pendingChallengesCard(code: string, challenges: MinigameSession[]): string {
   if (challenges.length === 0) return "";
   const rows = challenges
     .map((session) => {
@@ -1124,7 +1138,7 @@ export function groupPage(
     <div class="group-layout">
       <div class="group-layout-actions">
         ${joinOrAuthCard}
-        ${challengesCard}
+        <div id="challenges-card">${challengesCard}</div>
         ${logResultCard}
         ${minigameCard}
         ${groupMatchCard}

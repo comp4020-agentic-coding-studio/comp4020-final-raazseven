@@ -58,6 +58,7 @@ import {
   memberOptionsFragment,
   mePage,
   newGroupPage,
+  pendingChallengesCard,
   profilePage,
   resultsListFragment,
   signupPage,
@@ -457,6 +458,21 @@ app.get<{ Params: { code: string } }>("/g/:code/events", async (req, reply) => {
   });
 
   reply.hijack();
+});
+
+/** The in-page "Challenges waiting on you" card's content, scoped to this
+ * one group and this one viewer --- what `liveScript`'s "challenge" listener
+ * (src/pages.ts) fetches on a live ping, instead of reloading the whole
+ * page. Reloading used to race the acceptor's own in-flight navigation away
+ * from this exact page (decisions/0009): accept/decline both broadcast this
+ * same event on the group's channel, so an acceptor's still-open group-page
+ * tab could reload itself right back here instead of letting the accept
+ * route's redirect land on the game page. */
+app.get<{ Params: { code: string } }>("/g/:code/challenges", async (req, reply) => {
+  const group = getGroupByCode(req.params.code.toUpperCase());
+  if (!group) return reply.code(404).send("no group with that code");
+  const user = currentUser(req);
+  reply.type("text/html").send(user ? pendingChallengesCard(group.code, pendingChallengesFor(group.id, user.id)) : "");
 });
 
 app.post<{ Params: { code: string } }>("/g/:code/join", async (req, reply) => {
