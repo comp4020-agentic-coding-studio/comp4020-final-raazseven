@@ -681,8 +681,23 @@ export const baseStyles = `
   .profile-header {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 0.75rem;
     margin-bottom: 0.5rem;
+  }
+
+  /* The game page's "challenger vs opponent" row (src/pages.ts's gamePage)
+     puts two player names directly in .profile-header, not inside a
+     .profile-header-text wrapper like every other use of this class --- a
+     real account name has no length limit, and two of them plus "vs" and
+     two avatars on one un-wrapping flex row overflowed a phone-width
+     viewport. flex-wrap above lets the row break between the two
+     avatar+name pairs instead of forcing them onto one line; this min-width
+     is what then lets a single long name wrap internally rather than
+     forcing even its own pair wider than the viewport. */
+  .profile-header strong {
+    min-width: 0;
+    overflow-wrap: break-word;
   }
 
   .profile-header-text {

@@ -75,6 +75,14 @@ added when something real broke, not written in advance.
   out its container.
 - `<input>` is `inline-block` by default. Don't rely on it happening to be a
   flex child for full width; set `width: 100%` explicitly.
+- A flex row holding unconstrained text (a real account name, no length
+  limit) needs both `flex-wrap: wrap` on the container and `min-width: 0` on
+  the text item --- a flex item's default `min-width: auto` stops it
+  shrinking below its content's natural width, so without the override a
+  long name pushes the row past the viewport on a narrow phone instead of
+  wrapping. Test at actual phone widths (≤390px), not just by resizing a
+  desktop browser window, since the failure is specific to how little room
+  there is to shrink into.
 
 ## Documentation discipline
 
