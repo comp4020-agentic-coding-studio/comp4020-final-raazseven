@@ -472,3 +472,60 @@ new in `spec/challenge-notifications.test.ts`) green, plus the real
 two-browser reproduction re-run 5 times post-fix as the actual check that
 matters here, since the bug itself was never visible at the HTTP-assertion
 level in the first place.
+
+## 2026-10-31
+
+Asked to try the app out on mobile specifically. Set up `playwright-core`
+again (same scratch-install technique as the liquid-glass session:
+`apt-get download` for `libnspr4`/`libnss3`/`libasound2t64` without root,
+extracted with `dpkg-deb -x`, `LD_LIBRARY_PATH` pointed at the result), this
+time emulating real phone devices (`playwright-core`'s built-in `devices`
+presets: iPhone 13 as the main run, plus iPhone SE and Pixel 7 as narrower/
+Android spot-checks) rather than just a resized desktop viewport --- real
+touch events (`.tap()`, not `.click()`), real device pixel ratios, real
+viewport widths.
+
+First pass surfaced a genuine false alarm from my own test setup, not the
+app: repeated server restarts kept silently failing (`EADDRINUSE`, because
+an earlier instance was still bound to :8080), while each restart attempt's
+`rm -f data/test.db*` deleted the db file out from under that still-running
+old process --- which then started answering every request with "attempt to
+write a readonly database." Mistook this for an app bug briefly before
+checking `ps aux` and finding the stale process; killed it and confirmed a
+genuinely single, fresh process via direct `curl` before trusting any
+further test result. Direct instance of this repo's own standing rule about
+isolating the real cause before chasing symptoms, just surfacing somewhere
+new (test infrastructure, not app code, this time).
+
+Ran a comprehensive mobile pass: every major flow (signup, group creation,
+joining, logging a result, the mini-game challenge/accept/play/win cycle,
+declining, the stats dashboard) via real taps on an iPhone-13-sized
+viewport, plus an explicit no-horizontal-overflow check after every
+navigation and explicit tap-target-size checks on small interactive
+elements (checkboxes, buttons, Tic-Tac-Toe cells) --- the specific failure
+modes a desktop-only click-based test can't see at all.
+
+Found one real bug: the mini-game's own page (`gamePage` in `src/pages.ts`)
+puts both players' names directly as bare `<strong>` elements inside
+`.profile-header`, unlike every other use of that class elsewhere in the
+app, which wraps the text in a `.profile-header-text` div that already has
+`min-width: 0` for exactly this reason. A real account name has no length
+limit, and two names plus "vs" plus two avatars on one non-wrapping flex
+row overflowed a 390px-wide viewport by over 150px. Fixed with
+`flex-wrap: wrap` on `.profile-header` (lets the row break between the two
+avatar+name pairs) plus `min-width: 0` and `overflow-wrap: break-word` on
+`.profile-header strong` specifically (lets one name wrap internally rather
+than forcing its own pair wider than the viewport) --- confirmed via a
+separate desktop-width check that this doesn't force an unwanted wrap on
+wide screens, since `flex-wrap` only engages once content genuinely doesn't
+fit. Added this as a new CLAUDE.md CSS/layout rule, since it's a distinct
+failure shape from the grid-track and `<input>`-width rules already there:
+a flex row holding unconstrained text needs both `flex-wrap` on the
+container and `min-width: 0` on the text item, and the only way to actually
+catch it is testing at real phone widths, not resizing a desktop window.
+
+Verified: `pnpm typecheck` clean, full suite (98/98) still green after the
+fix (confirming it's CSS-only, no behavioural change), the full 29-check
+mobile Playwright pass green across iPhone 13/SE and Pixel 7 viewports, and
+a separate desktop-width check confirming the fix doesn't alter the
+existing desktop layout.
