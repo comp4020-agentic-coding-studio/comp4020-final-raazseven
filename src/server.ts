@@ -9,6 +9,7 @@ import {
   createGroup,
   friendsForUser,
   getGroupByCode,
+  getGroupById,
   getResultById,
   getUserById,
   groupMatchesForGroup,
@@ -68,14 +69,18 @@ import { renderReadme } from "./readme.ts";
 import { broadcast, subscribe } from "./live.ts";
 import {
   acceptChallenge,
-  allPendingChallengesFor,
+  acknowledgeGame,
+  allNoticesFor,
   applyMove,
   channelFor,
   createChallenge,
   declineChallenge,
+  forfeitGame,
   GAME_NAMES,
   getSession,
   pendingChallengesFor,
+  registerGameConnection,
+  unregisterGameConnection,
   userChannelFor,
   type GameKind,
 } from "./minigames.ts";
@@ -298,14 +303,16 @@ app.get("/me/events", async (req, reply) => {
 });
 
 /** The site-wide popup's content, fetched on every page load and after every
- * live "challenge" ping (decisions/0008) --- a plain HTML fragment, not a
- * full page, since the client only ever swaps this into the `<dialog>`
- * already sitting in the page from `layout()`. Spans every group the user is
- * in, unlike the per-group card on a group's own page. */
+ * live "challenge" ping (decisions/0008, extended by decisions/0010) --- a
+ * plain HTML fragment, not a full page, since the client only ever swaps
+ * this into the `<dialog>` already sitting in the page from `layout()`.
+ * Spans every group the user is in, unlike the per-group card on a group's
+ * own page. Covers three notice kinds now, not just "you've been
+ * challenged" --- see allNoticesFor() in src/minigames.ts. */
 app.get("/me/challenges", async (req, reply) => {
   const user = currentUser(req);
   if (!user) return reply.code(401).send("");
-  reply.type("text/html").send(challengePopupFragment(allPendingChallengesFor(user.id)));
+  reply.type("text/html").send(challengePopupFragment(allNoticesFor(user.id)));
 });
 
 app.post("/me/avatar", async (req, reply) => {
@@ -826,6 +833,22 @@ function gamePlayers(session: NonNullable<ReturnType<typeof getSession>>): [User
   return [playerA, playerB];
 }
 
+/** Logs a forfeit through the existing addResult() and the existing
+ * result-broadcast --- the same `addResult()` call and the same
+ * `{ type: "result", ... }` broadcast the move route's own win-logging
+ * already uses (decisions/0010: "everything is logged the same way as other
+ * games logged manually too"), kept as its own small function rather than
+ * folded into the move route's win-logging, since a forfeit isn't the
+ * result of a move at all and has a different actor: the winner is who it's
+ * credited to and the most natural logger for it (there's no "the game
+ * logged itself" actor in this app's model, and decisions/0006 already
+ * requires every result to have a real logger). */
+function logForfeit(req: FastifyRequest, group: Group, gameName: string, winnerId: number, loserId: number, detail: string): void {
+  addResult(group.id, gameName, [winnerId], [loserId], undefined, winnerId);
+  record(req, winnerId, "minigame.forfeit", group.id, detail);
+  broadcast(group.code, { type: "result", html: resultsListFragment(group, resultsForGroup(group.id)) });
+}
+
 app.post<{ Params: { code: string }; Body: { opponentId: string; game: GameKind } }>(
   "/g/:code/games",
   async (req, reply) => {
@@ -929,6 +952,13 @@ function respondToChallenge(
   // other open tabs (e.g. a popup still showing on a second tab) need to
   // clear too, not just the group page's card.
   broadcast(userChannelFor(players[1].id), { type: "challenge", html: "" });
+  // decisions/0010: an acceptance also has to reach the CHALLENGER (players[0]),
+  // who until now was never told anything beyond staying on the exact game
+  // page they happened to be on when they sent it. A decline doesn't need
+  // this --- there's nothing active for the challenger to be pulled into.
+  if (result.session.status === "active") {
+    broadcast(userChannelFor(players[0].id), { type: "challenge", html: "" });
+  }
   reply.redirect(`/g/${group.code}/games/${result.session.id}`, 303);
 }
 
@@ -939,6 +969,103 @@ app.post<{ Params: { code: string; id: string } }>("/g/:code/games/:id/accept", 
 app.post<{ Params: { code: string; id: string } }>("/g/:code/games/:id/decline", async (req, reply) => {
   respondToChallenge(req, reply, req.params.code, req.params.id, declineChallenge, "minigame.decline", "declined");
 });
+
+/** Either player concedes an active game (decisions/0010) --- the other
+ * player wins, logged exactly like a normal win. Shared by the explicit
+ * "Forfeit" button and (indirectly, via forfeitGame()) by the automatic
+ * disconnect-timeout path wired into the SSE route below; both end up here
+ * doing the same broadcasts and the same logging. */
+app.post<{ Params: { code: string; id: string } }>("/g/:code/games/:id/forfeit", async (req, reply) => {
+  const found = requireGameSession(req.params.code, req.params.id);
+  if (!found) return reply.code(404).send("no such game");
+  const { group, session } = found;
+
+  const user = currentUser(req);
+  if (!user) {
+    return reply
+      .type("text/html")
+      .send(gamePage(group, session!, gamePlayers(session!), undefined, "you need to be signed in"));
+  }
+
+  const result = forfeitGame(session!.id, user.id);
+  if (!result.ok) {
+    return reply.type("text/html").send(gamePage(group, session!, gamePlayers(session!), user, result.error));
+  }
+
+  const players = gamePlayers(result.session);
+  const gameName = GAME_NAMES[result.session.game];
+  const winner = getUserById(result.winnerId)!;
+  const loser = players.find((p) => p.id !== result.winnerId)!;
+
+  logForfeit(
+    req,
+    group,
+    gameName,
+    result.winnerId,
+    loser.id,
+    `"${loser.name}" forfeited ${gameName} to "${winner.name}" in "${group.name}"`,
+  );
+  broadcast(channelFor(result.session.id), {
+    type: "board",
+    html: gameBoardFragment(result.session, players, undefined, `/g/${group.code}/games/${result.session.id}`),
+  });
+  // The winner needs telling the same way an acceptance tells the challenger
+  // (decisions/0010) --- "your opponent left, you won" is exactly the same
+  // kind of thing someone needs to hear about from wherever they are in the
+  // app, not just if they happen to still be on this exact page.
+  broadcast(userChannelFor(result.winnerId), { type: "challenge", html: "" });
+  reply.redirect(`/g/${group.code}/games/${result.session.id}`, 303);
+});
+
+/** Marks an "accepted" / "forfeited-win" popup notice as seen
+ * (decisions/0010) --- called by the popup's own "Dismiss" button so the
+ * same notice doesn't keep reappearing on every page load. No broadcast: the
+ * person dismissing it is the only one who needed to know, and they're the
+ * one doing the dismissing. */
+app.post<{ Params: { code: string; id: string } }>("/g/:code/games/:id/acknowledge", async (req, reply) => {
+  const found = requireGameSession(req.params.code, req.params.id);
+  if (!found) return reply.code(404).send("no such game");
+  const { group } = found;
+  const user = currentUser(req);
+  if (user) acknowledgeGame(req.params.id, user.id);
+  reply.redirect(`/g/${group.code}`, 303);
+});
+
+/** Runs the actual auto-forfeit once a player's disconnect grace period
+ * (decisions/0010) elapses with no reconnection --- looked up fresh by id
+ * rather than closed over the request that opened the connection, since by
+ * the time this fires (up to 30s later) that request is long gone. Mirrors
+ * the explicit /forfeit route's own logging/broadcast shape exactly, so an
+ * automatic and a manual forfeit are indistinguishable in the results feed
+ * and the audit log apart from the action name. */
+function autoForfeit(gameId: string, departedPlayerId: number): void {
+  const session = getSession(gameId);
+  if (!session || session.status !== "active") return;
+  const group = getGroupById(session.groupId);
+  if (!group) return;
+
+  const result = forfeitGame(gameId, departedPlayerId);
+  if (!result.ok) return;
+
+  const players = gamePlayers(session);
+  const gameName = GAME_NAMES[session.game];
+  const winner = getUserById(result.winnerId)!;
+  const loser = players.find((p) => p.id !== result.winnerId)!;
+
+  addResult(group.id, gameName, [result.winnerId], [loser.id], undefined, result.winnerId);
+  logAction(
+    result.winnerId,
+    "minigame.forfeit",
+    group.id,
+    `"${loser.name}" disconnected and forfeited ${gameName} to "${winner.name}" in "${group.name}"`,
+  );
+  broadcast(group.code, { type: "result", html: resultsListFragment(group, resultsForGroup(group.id)) });
+  broadcast(channelFor(gameId), {
+    type: "board",
+    html: gameBoardFragment(session, players, undefined, `/g/${group.code}/games/${gameId}`),
+  });
+  broadcast(userChannelFor(result.winnerId), { type: "challenge", html: "" });
+}
 
 // Server-sent events for one mini-game's board --- identical shape to
 // GET /g/:code/events, just scoped to the game's own channel
@@ -954,6 +1081,15 @@ app.get<{ Params: { code: string; id: string } }>("/g/:code/games/:id/events", a
   });
   reply.raw.write(": connected\n\n");
 
+  // Only a PLAYER's connection counts toward the disconnect-forfeit timer
+  // (decisions/0010) --- a spectator opening and closing the page has no
+  // bearing on whether either player is still around. undefined for anyone
+  // else, which registerGameConnection/unregisterGameConnection both treat
+  // as "nothing to track."
+  const viewer = currentUser(req);
+  const playerId = viewer && found.session!.playerIds.includes(viewer.id) ? viewer.id : undefined;
+  registerGameConnection(req.params.id, playerId);
+
   const heartbeat = setInterval(() => reply.raw.write(": keep-alive\n\n"), 25_000);
   const unsubscribe = subscribe(channelFor(req.params.id), (event) => {
     reply.raw.write(sseLine(event.type, event.html));
@@ -961,6 +1097,7 @@ app.get<{ Params: { code: string; id: string } }>("/g/:code/games/:id/events", a
   req.raw.on("close", () => {
     clearInterval(heartbeat);
     unsubscribe();
+    unregisterGameConnection(req.params.id, playerId, autoForfeit);
   });
 
   reply.hijack();

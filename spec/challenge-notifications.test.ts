@@ -48,8 +48,9 @@ it("a challenge shows up in /me/challenges even though it was never fetched from
   await challenge(groupPath, challengerCookie, opponentId);
 
   const html = await (await fetch(new URL("/me/challenges", baseUrl), { headers: { cookie: opponentCookie } })).text();
-  expect(html).toContain("You've been challenged");
+  expect(html).toContain("Mini-game updates");
   expect(html).toContain("Priya");
+  expect(html).toContain("challenged you to");
   expect(html).toContain("Tic-Tac-Toe");
 });
 
@@ -89,7 +90,7 @@ it("accepting a challenge clears it from /me/challenges, checked from a fresh re
   const gamePath = await challenge(groupPath, challengerCookie, opponentId);
 
   const before = await (await fetch(new URL("/me/challenges", baseUrl), { headers: { cookie: opponentCookie } })).text();
-  expect(before).toContain("You've been challenged");
+  expect(before).toContain("challenged you to");
 
   const acceptRes = await fetch(new URL(`${gamePath}/accept`, baseUrl), {
     method: "POST",
@@ -222,7 +223,7 @@ it("challenges from two different groups both show up in one /me/challenges fetc
   await challenge(groupB, challengerCookie, opponentInB);
 
   const html = await (await fetch(new URL("/me/challenges", baseUrl), { headers: { cookie: opponentCookie } })).text();
-  const matches = html.match(/You've been challenged/g) ?? [];
+  const matches = html.match(/Mini-game updates/g) ?? [];
   expect(matches.length).toBe(1); // one shared heading in the fragment markup
   expect((html.match(/challenged you to Tic-Tac-Toe/g) ?? []).length).toBe(2);
 });

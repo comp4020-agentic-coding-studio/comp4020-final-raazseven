@@ -2,7 +2,13 @@ import type { Group, GroupMatch, HeadToHeadTally, MemberWithRole, MembershipWith
 import { disputesForResult, getGroupById, getUserById, participantsForResult } from "./db.ts";
 import { curatedTagsByCategory } from "./db.ts";
 import { baseStyles, iconChip, logoMark, siteHeader } from "./styles.ts";
-import { GAME_NAMES, type MinigameSession, type RockPaperScissorsState, type TicTacToeState } from "./minigames.ts";
+import {
+  GAME_NAMES,
+  type MinigameNotice,
+  type MinigameSession,
+  type RockPaperScissorsState,
+  type TicTacToeState,
+} from "./minigames.ts";
 
 function escapeHtml(s: string): string {
   return s
@@ -717,42 +723,82 @@ export function pendingChallengesCard(code: string, challenges: MinigameSession[
   </div>`;
 }
 
-/** The site-wide challenge popup's inner markup (decisions/0008) --- unlike
- * `pendingChallengesCard` above (scoped to one group, rendered inline on
- * that group's own page), this spans every group the viewer is in at once,
- * since the whole point is reaching them no matter which page they're on.
- * Each challenge needs its own group's code (not one shared `code` param,
- * since the challenges here can come from different groups), so this looks
- * the group up per challenge rather than taking it as a parameter. Returns
- * empty string when there's nothing pending --- the client only shows the
- * `<dialog>` when this has real content. This is also the `/me/challenges`
- * fragment route's full response body (src/server.ts), fetched on page load
- * and after every live "challenge" ping (see `challengePopupScript` below). */
-export function challengePopupFragment(challenges: MinigameSession[]): string {
-  if (challenges.length === 0) return "";
-  const rows = challenges
-    .map((session) => {
-      const challenger = getUserById(session.playerIds[0]);
+/** The site-wide challenge popup's inner markup (decisions/0008, extended by
+ * decisions/0010) --- unlike `pendingChallengesCard` above (scoped to one
+ * group, rendered inline on that group's own page), this spans every group
+ * the viewer is in at once, since the whole point is reaching them no
+ * matter which page they're on. Each notice needs its own group's code (not
+ * one shared `code` param, since the notices here can come from different
+ * groups), so this looks the group up per notice rather than taking it as a
+ * parameter. Returns empty string when there's nothing to show --- the
+ * client only shows the `<dialog>` when this has real content. This is also
+ * the `/me/challenges` fragment route's full response body (src/server.ts),
+ * fetched on page load and after every live "challenge" ping (see
+ * `challengePopupScript` below).
+ *
+ * Three notice kinds, decisions/0010's actual fix: "challenged" (unchanged
+ * from 0008) needs an answer, so it gets Accept/Decline; "accepted" and
+ * "forfeited-win" are informational only (there's nothing to do but go look)
+ * so each gets a "View game" link plus a one-click "Dismiss" that calls
+ * `POST .../acknowledge` --- without that, the same notice would keep
+ * reappearing on every page load forever, since nothing else ever marks it
+ * seen. */
+export function challengePopupFragment(notices: MinigameNotice[]): string {
+  if (notices.length === 0) return "";
+  const rows = notices
+    .map(({ kind, session }) => {
       const group = getGroupById(session.groupId);
-      if (!challenger || !group) return "";
+      if (!group) return "";
       const gamePath = `/g/${encodeURIComponent(group.code)}/games/${encodeURIComponent(session.id)}`;
+      const gameName = escapeHtml(GAME_NAMES[session.game]);
+      const groupName = escapeHtml(group.name);
+
+      if (kind === "challenged") {
+        const challenger = getUserById(session.playerIds[0]);
+        if (!challenger) return "";
+        return `<li class="result-row">
+          <div class="matchup">
+            ${avatarImg(userAvatarUrl(challenger.id), challenger.name)}
+            <span>${escapeHtml(challenger.name)} challenged you to ${gameName} in ${groupName}</span>
+          </div>
+          <div class="witness-actions">
+            <form method="post" action="${gamePath}/accept" style="display:inline">
+              <button type="submit" class="btn-solid witness-btn">Accept</button>
+            </form>
+            <form method="post" action="${gamePath}/decline" style="display:inline">
+              <button type="submit" class="btn-ghost witness-btn">Decline</button>
+            </form>
+          </div>
+        </li>`;
+      }
+
+      // "accepted" is only ever shown to the challenger (playerIds[0]), so
+      // the other party is always playerIds[1]. "forfeited-win" is shown to
+      // whoever won (session.winnerId), who could be EITHER player --- the
+      // person who left is whichever one of the two ISN'T the winner, not
+      // always playerIds[1]. Conflating the two (an earlier draft of this
+      // function always named playerIds[1]) named the wrong person whenever
+      // the opponent, not the challenger, was the one who forfeited.
+      const otherPartyId = kind === "accepted" ? session.playerIds[1] : session.playerIds.find((id) => id !== session.winnerId)!;
+      const otherParty = getUserById(otherPartyId);
+      const message =
+        kind === "accepted"
+          ? `${otherParty ? escapeHtml(otherParty.name) : "Your opponent"} accepted your ${gameName} challenge in ${groupName} --- it's on!`
+          : `${otherParty ? escapeHtml(otherParty.name) : "Your opponent"} left your ${gameName} game in ${groupName} --- you win!`;
       return `<li class="result-row">
         <div class="matchup">
-          ${avatarImg(userAvatarUrl(challenger.id), challenger.name)}
-          <span>${escapeHtml(challenger.name)} challenged you to ${escapeHtml(GAME_NAMES[session.game])} in ${escapeHtml(group.name)}</span>
+          <span>${message}</span>
         </div>
         <div class="witness-actions">
-          <form method="post" action="${gamePath}/accept" style="display:inline">
-            <button type="submit" class="btn-solid witness-btn">Accept</button>
-          </form>
-          <form method="post" action="${gamePath}/decline" style="display:inline">
-            <button type="submit" class="btn-ghost witness-btn">Decline</button>
+          <a class="btn-solid witness-btn" href="${gamePath}">View game</a>
+          <form method="post" action="${gamePath}/acknowledge" style="display:inline">
+            <button type="submit" class="btn-ghost witness-btn">Dismiss</button>
           </form>
         </div>
       </li>`;
     })
     .join("\n");
-  return `<h2 style="margin-top:0">You've been challenged</h2>
+  return `<h2 style="margin-top:0">Mini-game updates</h2>
     <ul class="results-list">${rows}</ul>`;
 }
 
@@ -929,9 +975,26 @@ export function gameBoardFragment(
   if (session.status === "declined") {
     return `<p class="lede" style="margin-top:0">${escapeHtml(players[1].name)} declined this challenge.</p>`;
   }
-  return session.game === "tic-tac-toe"
-    ? ticTacToeBoardHtml(session, players, moveUrl)
-    : rpsBoardHtml(session, players, viewerId, moveUrl);
+  if (session.status === "forfeited") {
+    const winner = players.find((p) => p.id === session.winnerId)!;
+    const loser = players.find((p) => p.id !== session.winnerId)!;
+    return `<p class="lede" style="margin-top:0">${escapeHtml(loser.name)} forfeited --- ${escapeHtml(winner.name)} wins!</p>`;
+  }
+  const board =
+    session.game === "tic-tac-toe"
+      ? ticTacToeBoardHtml(session, players, moveUrl)
+      : rpsBoardHtml(session, players, viewerId, moveUrl);
+  // Only a player in an still-active game can forfeit it, and only while
+  // it's active --- rendered inside #game-board so it disappears on its own
+  // the moment a live "board" event swaps in the finished/forfeited state
+  // (decisions/0010), the same way the board itself always has.
+  const canForfeit = session.status === "active" && viewerId !== undefined && session.playerIds.includes(viewerId);
+  const forfeitButton = canForfeit
+    ? `<form method="post" action="${gamePath}/forfeit" style="margin-top:0.75rem">
+        <button type="submit" class="btn-ghost witness-btn">Forfeit</button>
+      </form>`
+    : "";
+  return `${board}${forfeitButton}`;
 }
 
 /** Parallel to liveScript() above, but scoped to one game's own SSE channel
