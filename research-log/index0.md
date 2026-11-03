@@ -626,3 +626,70 @@ runtime gap the type system missed).
 Verified: `pnpm typecheck` clean, full suite 112/112 (110 pre-existing + 2
 new), and the exact reported symptom re-checked by hand with curl before
 and after the fix.
+
+## 2026-11-03 (continued again)
+
+Two more asks in the same session: a mini-game's auto-logged result
+shouldn't be disputable at all, and the manual logging form should support
+a draw. Checked with the person first whether adding a draw would affect
+`research-note.md`'s argument before touching anything --- it doesn't: the
+note only cites `decisions/0004`, `0007`, `0009` (and `0002` via a
+Naur/Storey discussion), none of which concern disputes or draws, so both
+changes were safe to make without touching the note itself (which stays
+person-authored regardless).
+
+Wrote `decisions/0011-minigame-results-never-disputable-draws-logged.md`
+before coding, bundling the two asks into one ADR since they both widen the
+same `results`/`result_participants` schema in the same pass. Added a
+`source` column (`'manual' | 'minigame'`, backfilled for every existing
+mini-game row by matching `game` against `GAME_NAMES`' values --- the only
+reliable existing signal, since there was never a source column to read
+before now) and an `is_draw` column, both additive. `result_participants`'s
+`CHECK (side IN ('winner', 'loser'))` needed widening to include `'draw'`
+--- SQLite can't alter a `CHECK` in place, so this is another
+rename/recreate/copy/drop rebuild, the same pattern `group_matches` already
+established, guarded by reading `sqlite_master.sql` directly rather than
+`PRAGMA table_info()` (which doesn't expose a column's `CHECK` expression at
+all, only `PRAGMA table_info` does for type/not-null/default).
+
+Design choice worth remembering: `disputeControls()` now checks
+`result.source === "minigame"` and returns nothing, before any other
+eligibility check runs --- deliberately ahead of "are you a named
+participant," not behind it, so a mini-game result is uncontestable by
+construction rather than by everyone happening to fail some other rule.
+Confirmed this ordering by hand with a user who has zero connection to the
+result at all (a fresh signup who only just joined the group), not just a
+named participant, since the eligibility-based rejection path would have
+also produced the same visible "can't be disputed" outcome for the wrong
+reason if the ordering were reversed.
+
+Gotcha hit (caught before committing, not after): the first draft of the
+"mini-game result can never be disputed" test tried to read the result's id
+off rendered HTML the same way every existing dispute test does ---
+matching `/results/(\d+)/(witness|dispute)/` --- except neither form
+renders for a mini-game result anymore (witnessing was never wired into
+mini-game logging, decisions/0005 scoped it to manual-only, and 0011 now
+also suppresses the dispute form). With no form left to scrape an id from,
+I almost fell back to a hardcoded `"1"`, which would have been the exact
+"result ids are global, not per-group" mistake already documented and fixed
+in the 2026-10-23 entry above --- caught it before running the test, not
+after it flaked. Fixed properly by adding a plain `data-result-id`
+attribute to every rendered result row (`resultsListFragment` in
+`src/pages.ts`) --- genuinely useful markup on its own, not a test-only
+hook, and the one place every result's id is now recoverable regardless of
+which action buttons happen to render for a given viewer.
+
+Added real automated coverage for both features (`spec/draws.test.ts`: the
+happy path, the two-participant-minimum check, the membership check, and a
+named draw participant disputing with the correct "N of M" denominator) and
+a second dispute-rejection test for a genuine stranger (not just an
+eligible-but-blocked participant) hitting the route directly, both of which
+had previously only been checked by hand with curl and a one-off
+`node:sqlite` read against the dev database, not asserted in the suite.
+
+Verified: `pnpm typecheck` clean, full suite 117/117 (112 pre-existing + 5
+new across `spec/draws.test.ts` and `spec/result-disputes.test.ts`), run
+against a single confirmed fresh server process (killed and restarted after
+editing `src/pages.ts`, since an earlier run against a stale already-running
+process produced one failure that was the test correctly catching old code,
+not a real regression).
