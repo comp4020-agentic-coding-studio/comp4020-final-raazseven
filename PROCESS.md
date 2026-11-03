@@ -77,16 +77,15 @@ page, not just the one group's
 ([`decisions/0009`](decisions/0009-challenge-ping-no-longer-reloads-the-page.md)):
 accepting a challenge sometimes left the acceptor on the group page instead
 of the game — the accept route's own broadcast raced the acceptor's own
-navigation, because the group page handled that broadcast with
-`location.reload()`. Reproduced with two real browser contexts, fixed with a
-fetch-and-swap instead of a reload, re-verified 5/5 clean.
+navigation. Reproduced with two real browser contexts, fixed with a
+fetch-and-swap instead of `location.reload()`, re-verified 5/5 clean.
 
-**A phone-width layout bug, found by testing real phone viewports, not a
-resized desktop window**
-([`838b66a`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/838b66a)):
+**A phone-width layout bug**
+([`838b66a`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/838b66a)),
+found testing real phone viewports rather than a resized desktop window:
 two player names in an unguarded flex row overflowed a 390px viewport by
-150px. Fixed with `flex-wrap` and `min-width: 0`; confirmed desktop is
-unaffected. Added as a new `CLAUDE.md` rule.
+150px, fixed with `flex-wrap` and `min-width: 0`. Added as a new `CLAUDE.md`
+rule.
 
 **Forfeiting, and telling the challenger what happened to their own game**
 ([`decisions/0010`](decisions/0010-forfeit-and-challenger-notification.md)):
@@ -99,7 +98,11 @@ Forfeit button, plus an automatic forfeit after a 30-second grace period if
 a player's connection drops and doesn't return (long enough to survive a
 refresh, short enough to resolve a real departure) — both log through the
 same `addResult()` a normal win already uses, so a forfeit reads identically
-to any other logged result.
+to any other logged result. A follow-up report caught the popup's own "View
+game" button: a plain link that never called the route marking its notice
+seen, so the same notice kept reappearing — fixed by routing it through the
+same acknowledge call as "Dismiss," which also surfaced a real crash
+(`req.body` is `undefined`, not `{}`, for a request with no body at all).
 
 ## Process discipline: corrections became rules, not one-off fixes
 
@@ -124,17 +127,15 @@ parallelism noise.
 
 ## Verification discipline
 
-`pnpm check` is 110/110 clean as of
-[`516d983`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/516d983).
+`pnpm check` is 112/112 clean as of
+[`05194a1`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/05194a1).
 Every session this project has run has re-verified past what the test suite
-alone can show: SSH'ing into the live machine to confirm a migration
-actually landed on `/data/app.db`, re-opening the live SSE stream after a
-deploy that "wasn't about real-time" to watch a result still arrive on a
-second connection, race conditions reproduced with two real browser contexts
-rather than assumed from reading the code (an accept-redirect race, and an
-automatic-forfeit timer checked against a genuine 30-second wait and a
-genuine dropped connection, not simulated), and a full pass on real phone
-emulation (iPhone and Android viewports, actual touch taps) rather than just
-a resized desktop window. `research-log/index0.md` is the running account of
-what each session actually tried, including the mistakes — this file is the
-current snapshot; that one is the history.
+alone can show: SSH'ing into the live machine to confirm a migration landed
+on `/data/app.db`, re-opening the live SSE stream after a deploy that "wasn't
+about real-time," race conditions reproduced with two real browser contexts
+rather than assumed from reading the code (an accept-redirect race, an
+automatic-forfeit timer against a genuine 30-second wait and dropped
+connection), and a full pass on real phone emulation (actual touch taps)
+rather than a resized desktop window. `research-log/index0.md` is the
+running account of what each session actually tried, including the
+mistakes — this file is the current snapshot; that one is the history.
