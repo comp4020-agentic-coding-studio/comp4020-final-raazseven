@@ -589,3 +589,40 @@ confirming the automatic forfeit fires; a second real test confirming a mere
 page refresh (same connection-drop mechanism, much shorter gap) does NOT
 trigger a forfeit; `pnpm typecheck` clean; full suite 110/110 (98
 pre-existing + 12 new in `spec/minigame-forfeit.test.ts`).
+
+## 2026-11-03 (continued)
+
+Reported directly, right after the above shipped: "View game" on the
+mini-game popup didn't work, and the popup stayed active after pressing it.
+Read the markup before guessing --- "View game" was a plain `<a href>` link,
+the only one of the popup's four buttons that wasn't a `<form>` posting
+somewhere. Clicking it navigated to the game correctly, but never called
+`/acknowledge` the way "Dismiss" does, so the exact same "your challenge was
+accepted" notice reappeared on every later page load, since nothing had ever
+marked it seen. The popup wasn't literally stuck --- it was a fresh,
+correctly-rendered re-fetch of a notice that should have already been
+cleared, which reads identically to "stuck" from the outside.
+
+Fixed by turning "View game" into a form posting to the same `/acknowledge`
+route "Dismiss" already uses, with a hidden `redirectTo=game` field the
+route reads to decide where to send the user back (the game vs. the group
+page). Caught a second, real bug while testing the fix by hand rather than
+assuming it worked: a bare `POST /acknowledge` with no body and no
+content-type at all (exactly what "Dismiss"'s plain `<form>` sends) crashed
+with a 500 --- `req.body` is `undefined`, not `{}`, when fastify's formbody
+plugin has nothing to parse, and the route read `req.body.redirectTo`
+unguarded. Fixed with optional chaining; re-ran the repro by hand to confirm
+the 500 was gone before moving on, not just trusting the type system would
+have caught it (it wouldn't have — `req.body` was typed as the Body
+generic, which TypeScript can't know is sometimes actually absent at
+runtime for a route fastify never calls `addContentTypeParser` for without
+a body).
+
+Added two tests directly for this: clicking "View game" both redirects
+correctly and clears the notice (the actual symptom reported), and posting
+to acknowledge with genuinely no body at all doesn't crash (the specific
+runtime gap the type system missed).
+
+Verified: `pnpm typecheck` clean, full suite 112/112 (110 pre-existing + 2
+new), and the exact reported symptom re-checked by hand with curl before
+and after the fix.
