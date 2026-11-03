@@ -529,3 +529,63 @@ fix (confirming it's CSS-only, no behavioural change), the full 29-check
 mobile Playwright pass green across iPhone 13/SE and Pixel 7 viewports, and
 a separate desktop-width check confirming the fix doesn't alter the
 existing desktop layout.
+
+## 2026-11-03
+
+Three gaps reported together: the challenger doesn't get into the game when
+the opponent accepts, nothing happens if someone leaves mid-game, and
+everything should log the same way manual results do. Reproduced the first
+one before assuming the code was wrong --- two real browser contexts,
+challenger stays on the game page: works fine, the live "board" broadcast
+updates it the moment the opponent accepts. The instant the challenger
+navigates away while waiting (completely normal — nobody stares at a
+"waiting for them to accept..." screen), there's no notification of any
+kind. Traced it in the code: the accept route pings the *opponent's*
+per-user notification channel (so the opponent gets told "you've been
+challenged"), but nothing ever pinged the *challenger's* channel to say
+"your challenge was accepted, go play." A real, confirmed gap, not a guess.
+
+Clarified scope before building: asked how strict "leaving = a loss" should
+be, specifically flagging that an SSE connection drops on every page
+refresh and tab-switch, not just a real quit --- an instant forfeit on
+disconnect would be a worse bug than the one being reported, penalizing
+someone for a flaky connection or glancing at another tab. Settled on both
+an explicit "Forfeit" button (deliberate concession) and an automatic
+forfeit after a 30-second grace period if a player's connection drops and
+doesn't return within that window --- long enough to survive a refresh,
+short enough to resolve a real departure promptly.
+
+Design: `MinigameSession.status` gained `"forfeited"`, logged through the
+exact same `addResult()` a normal win already uses (closing the third
+reported gap --- a forfeit now reads identically to any other logged result,
+not a separate kind of record). The per-game SSE route now tracks which
+*player* (not spectators) each open connection belongs to; a player's last
+connection closing starts a timer, reconnecting cancels it, the timer firing
+with no reconnection calls the same forfeit logic the explicit button uses.
+The challenger-notification gap was generalized rather than special-cased:
+extended the existing per-user popup (decisions/0008) with two new notice
+kinds beyond "you've been challenged" --- "accepted" (shown to the
+challenger once, with a dismiss) and "forfeited-win" (shown to whoever won a
+forfeited game, same treatment) --- adding an `acknowledgedBy` set per
+session so a dismissed notice doesn't keep reappearing on every page load.
+
+Gotcha hit, caught by testing with real account names instead of trusting
+the code: the first draft of the "forfeited-win" notice always named
+`session.playerIds[1]` as "who left," copied from the "accepted" notice's
+logic where that's always correct (the opponent is always `playerIds[1]`).
+For a forfeit, "who left" is whoever ISN'T the winner, which can be EITHER
+player depending on who forfeited — confirmed wrong immediately by having
+Marcus (the opponent) forfeit and watching the notice tell Priya "Marcus
+left, you win" (correct) versus an earlier version that would have said
+"Marcus left" even when Priya was the one who'd left. Fixed by deriving the
+departed player from `session.winnerId` directly rather than assuming a
+fixed index, then re-tested both directions (challenger forfeits, opponent
+forfeits) explicitly before trusting it.
+
+Verified: real two-browser reproduction of the original bug (confirmed) and
+of the fix (challenger notified on accept, winner notified on forfeit, both
+directions); a real 30-second wait against an actual dropped browser context
+confirming the automatic forfeit fires; a second real test confirming a mere
+page refresh (same connection-drop mechanism, much shorter gap) does NOT
+trigger a forfeit; `pnpm typecheck` clean; full suite 110/110 (98
+pre-existing + 12 new in `spec/minigame-forfeit.test.ts`).
