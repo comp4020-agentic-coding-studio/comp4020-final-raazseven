@@ -1018,18 +1018,30 @@ app.post<{ Params: { code: string; id: string } }>("/g/:code/games/:id/forfeit",
 });
 
 /** Marks an "accepted" / "forfeited-win" popup notice as seen
- * (decisions/0010) --- called by the popup's own "Dismiss" button so the
- * same notice doesn't keep reappearing on every page load. No broadcast: the
- * person dismissing it is the only one who needed to know, and they're the
- * one doing the dismissing. */
-app.post<{ Params: { code: string; id: string } }>("/g/:code/games/:id/acknowledge", async (req, reply) => {
-  const found = requireGameSession(req.params.code, req.params.id);
-  if (!found) return reply.code(404).send("no such game");
-  const { group } = found;
-  const user = currentUser(req);
-  if (user) acknowledgeGame(req.params.id, user.id);
-  reply.redirect(`/g/${group.code}`, 303);
-});
+ * (decisions/0010) --- called by BOTH the popup's "Dismiss" button (which
+ * stays on the current page, so redirects to the group) and its "View game"
+ * button (which goes to the game). A plain `<a href>` for "View game" looked
+ * right but was the actual bug reported: it navigated to the game without
+ * ever acknowledging, so the identical notice reappeared on every later page
+ * load since nothing had marked it seen --- the popup looked "stuck active"
+ * even though the user had done the obvious, correct thing. Both buttons now
+ * post here; `redirectTo` says which one it was. */
+app.post<{ Params: { code: string; id: string }; Body: { redirectTo?: "game" | "group" } }>(
+  "/g/:code/games/:id/acknowledge",
+  async (req, reply) => {
+    const found = requireGameSession(req.params.code, req.params.id);
+    if (!found) return reply.code(404).send("no such game");
+    const { group } = found;
+    const user = currentUser(req);
+    if (user) acknowledgeGame(req.params.id, user.id);
+    // req.body is undefined, not {}, for a request with no body/content-type
+    // at all (formbody doesn't synthesize an empty object) --- optional
+    // chaining here, not a bare req.body.redirectTo, is what that needs.
+    const destination =
+      req.body?.redirectTo === "game" ? `/g/${group.code}/games/${encodeURIComponent(req.params.id)}` : `/g/${group.code}`;
+    reply.redirect(destination, 303);
+  },
+);
 
 /** Runs the actual auto-forfeit once a player's disconnect grace period
  * (decisions/0010) elapses with no reconnection --- looked up fresh by id

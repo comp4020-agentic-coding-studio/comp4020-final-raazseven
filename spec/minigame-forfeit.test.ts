@@ -35,8 +35,13 @@ async function forfeit(gamePath: string, cookie: string): Promise<Response> {
   return fetch(new URL(`${gamePath}/forfeit`, baseUrl), { method: "POST", headers: { cookie }, redirect: "manual" });
 }
 
-async function acknowledge(gamePath: string, cookie: string): Promise<Response> {
-  return fetch(new URL(`${gamePath}/acknowledge`, baseUrl), { method: "POST", headers: { cookie }, redirect: "manual" });
+async function acknowledge(gamePath: string, cookie: string, redirectTo?: "game" | "group"): Promise<Response> {
+  return fetch(new URL(`${gamePath}/acknowledge`, baseUrl), {
+    method: "POST",
+    headers: redirectTo ? { cookie, "content-type": "application/x-www-form-urlencoded" } : { cookie },
+    body: redirectTo ? new URLSearchParams({ redirectTo }) : undefined,
+    redirect: "manual",
+  });
 }
 
 it("accepting a challenge notifies the CHALLENGER, not just the opponent", async () => {
@@ -72,11 +77,59 @@ it("the challenger's accept-notice can be dismissed, and doesn't come back", asy
   const gamePath = await challenge(groupPath, challengerCookie, opponentId);
   await accept(gamePath, opponentCookie);
 
-  const ackRes = await acknowledge(gamePath, challengerCookie);
+  const ackRes = await acknowledge(gamePath, challengerCookie, "group");
   expect(ackRes.status).toBe(303);
+  expect(ackRes.headers.get("location")).toBe(groupPath);
 
   const after = await (await fetch(new URL("/me/challenges", baseUrl), { headers: { cookie: challengerCookie } })).text();
   expect(after).toBe("");
+});
+
+// A real bug, reported directly: clicking "View game" looked broken because
+// the SAME notice kept reappearing afterward. The original bug was that
+// "View game" was a plain <a href> that navigated without ever calling
+// /acknowledge at all --- now it's a form posting redirectTo=game, same
+// route as Dismiss, just a different destination.
+it("clicking 'View game' redirects to the game AND clears the notice, same as Dismiss", async () => {
+  const groupPath = await createGroup(`spec-forfeit-group-${Date.now()}-view-game`);
+  const challengerCookie = await register(groupPath, "Priya", "a-real-password");
+  const opponentCookie = await register(groupPath, "Marcus", "a-real-password");
+  const opponentId = await memberId(groupPath, challengerCookie, "Marcus");
+
+  const gamePath = await challenge(groupPath, challengerCookie, opponentId);
+  await accept(gamePath, opponentCookie);
+
+  const before = await (await fetch(new URL("/me/challenges", baseUrl), { headers: { cookie: challengerCookie } })).text();
+  expect(before).toContain("View game");
+
+  const viewRes = await acknowledge(gamePath, challengerCookie, "game");
+  expect(viewRes.status).toBe(303);
+  expect(viewRes.headers.get("location")).toBe(gamePath);
+
+  const after = await (await fetch(new URL("/me/challenges", baseUrl), { headers: { cookie: challengerCookie } })).text();
+  expect(after, "the notice must not reappear after View game, the same as after Dismiss").toBe("");
+});
+
+// Formbody leaves req.body as undefined (not {}) for a request with no body
+// and no content-type at all --- a real crash caught while fixing the "View
+// game" bug above, since the route originally read req.body.redirectTo
+// unguarded.
+it("acknowledging with no body at all (Dismiss sends none) doesn't crash", async () => {
+  const groupPath = await createGroup(`spec-forfeit-group-${Date.now()}-no-body`);
+  const challengerCookie = await register(groupPath, "Priya", "a-real-password");
+  const opponentCookie = await register(groupPath, "Marcus", "a-real-password");
+  const opponentId = await memberId(groupPath, challengerCookie, "Marcus");
+
+  const gamePath = await challenge(groupPath, challengerCookie, opponentId);
+  await accept(gamePath, opponentCookie);
+
+  const res = await fetch(new URL(`${gamePath}/acknowledge`, baseUrl), {
+    method: "POST",
+    headers: { cookie: challengerCookie },
+    redirect: "manual",
+  });
+  expect(res.status).toBe(303);
+  expect(res.headers.get("location")).toBe(groupPath);
 });
 
 it("a player can forfeit an active game, logging a win for the other player", async () => {

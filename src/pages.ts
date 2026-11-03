@@ -790,7 +790,10 @@ export function challengePopupFragment(notices: MinigameNotice[]): string {
           <span>${message}</span>
         </div>
         <div class="witness-actions">
-          <a class="btn-solid witness-btn" href="${gamePath}">View game</a>
+          <form method="post" action="${gamePath}/acknowledge" style="display:inline">
+            <input type="hidden" name="redirectTo" value="game" />
+            <button type="submit" class="btn-solid witness-btn">View game</button>
+          </form>
           <form method="post" action="${gamePath}/acknowledge" style="display:inline">
             <button type="submit" class="btn-ghost witness-btn">Dismiss</button>
           </form>
