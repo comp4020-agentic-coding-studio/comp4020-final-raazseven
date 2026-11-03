@@ -3,6 +3,7 @@ import formbody from "@fastify/formbody";
 import cookie from "@fastify/cookie";
 import multipart from "@fastify/multipart";
 import {
+  addDrawResult,
   addGroupMatch,
   addResult,
   addResultDispute,
@@ -509,7 +510,14 @@ function idSet(raw: string | string[] | undefined): Set<number> {
 
 app.post<{
   Params: { code: string };
-  Body: { game: string; winner: string | string[]; loser: string | string[]; witness?: string };
+  Body: {
+    game: string;
+    winner: string | string[];
+    loser: string | string[];
+    witness?: string;
+    isDraw?: string;
+    participants?: string | string[];
+  };
 }>("/g/:code/results", async (req, reply) => {
   const group = getGroupByCode(req.params.code.toUpperCase());
   if (!group) return reply.code(404).send("no group with that code");
@@ -523,12 +531,39 @@ app.post<{
   }
 
   const game = req.body.game?.trim();
+  if (!game) {
+    return reply.type("text/html").send(renderGroupPage(group, user, { resultError: "a game is required" }));
+  }
+
+  // decisions/0011: a draw is a completely separate shape from a
+  // winner/loser result --- one set of people, no split --- so this branches
+  // on the checkbox before touching winner/loser at all, rather than trying
+  // to squeeze both shapes through one validation path.
+  if (req.body.isDraw === "1") {
+    const participantIds = idSet(req.body.participants);
+    if (participantIds.size < 2) {
+      return reply
+        .type("text/html")
+        .send(renderGroupPage(group, user, { resultError: "a draw needs at least two people" }));
+    }
+    const allMembers = [...participantIds].every((id) => memberInGroup(group.id, id));
+    if (!allMembers) {
+      return reply
+        .type("text/html")
+        .send(renderGroupPage(group, user, { resultError: "everyone in a draw must be a member of this group" }));
+    }
+    const result = addDrawResult(group.id, game, [...participantIds], user.id);
+    record(req, user.id, "result.create", group.id, `"${user.name}" logged ${game}: ${result.winner} drew in "${group.name}"`);
+    broadcast(group.code, { type: "result", html: resultsListFragment(group, resultsForGroup(group.id)) });
+    return reply.redirect(`/g/${group.code}`, 303);
+  }
+
   const winnerIds = idSet(req.body.winner);
   const loserIds = idSet(req.body.loser);
-  if (!game || winnerIds.size === 0 || loserIds.size === 0) {
+  if (winnerIds.size === 0 || loserIds.size === 0) {
     return reply
       .type("text/html")
-      .send(renderGroupPage(group, user, { resultError: "game, at least one winner and at least one loser are required" }));
+      .send(renderGroupPage(group, user, { resultError: "at least one winner and at least one loser are required" }));
   }
   // A side can be a team (any number of people), but no one can be on
   // both sides of the same result --- the original single-id check
@@ -647,6 +682,15 @@ app.post<{ Params: { code: string; id: string } }>("/g/:code/results/:id/dispute
   const result = getResultById(resultId);
   if (!result || result.group_id !== group.id) return reply.code(404).send("no such result");
 
+  // decisions/0011: a mini-game result is the server's own observation of
+  // real moves, not a human's typed-in claim --- there's no claim here to
+  // be wrong or lying about, so it's never disputable, regardless of who's
+  // asking.
+  if (result.source === "minigame") {
+    return reply
+      .type("text/html")
+      .send(renderGroupPage(group, user, { disputeError: "a mini-game's result is logged by the server, not a claim --- it can't be disputed" }));
+  }
   if (result.logged_by_user_id === user.id) {
     return reply
       .type("text/html")
@@ -844,7 +888,7 @@ function gamePlayers(session: NonNullable<ReturnType<typeof getSession>>): [User
  * logged itself" actor in this app's model, and decisions/0006 already
  * requires every result to have a real logger). */
 function logForfeit(req: FastifyRequest, group: Group, gameName: string, winnerId: number, loserId: number, detail: string): void {
-  addResult(group.id, gameName, [winnerId], [loserId], undefined, winnerId);
+  addResult(group.id, gameName, [winnerId], [loserId], undefined, winnerId, "minigame");
   record(req, winnerId, "minigame.forfeit", group.id, detail);
   broadcast(group.code, { type: "result", html: resultsListFragment(group, resultsForGroup(group.id)) });
 }
@@ -1064,7 +1108,7 @@ function autoForfeit(gameId: string, departedPlayerId: number): void {
   const winner = getUserById(result.winnerId)!;
   const loser = players.find((p) => p.id !== result.winnerId)!;
 
-  addResult(group.id, gameName, [result.winnerId], [loser.id], undefined, result.winnerId);
+  addResult(group.id, gameName, [result.winnerId], [loser.id], undefined, result.winnerId, "minigame");
   logAction(
     result.winnerId,
     "minigame.forfeit",
@@ -1157,7 +1201,7 @@ app.post<{ Params: { code: string; id: string }; Body: { cell?: string; choice?:
       const loserId = result.session.playerIds.find((id) => id !== winnerId)!;
       const winner = getUserById(winnerId)!;
       const loser = getUserById(loserId)!;
-      addResult(group.id, gameName, [winnerId], [loserId], undefined, user.id);
+      addResult(group.id, gameName, [winnerId], [loserId], undefined, user.id, "minigame");
       record(
         req,
         user.id,

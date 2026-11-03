@@ -201,7 +201,12 @@ it("disputing twice is a no-op, not a second dispute", async () => {
   expect(after).not.toContain("disputed by 2 of 2 named");
 });
 
-it("a mini-game's auto-logged result also shows a logger and accepts a dispute from the loser", async () => {
+// decisions/0011-minigame-results-never-disputable-draws-logged.md: a
+// mini-game's auto-logged result is the server's own observation of real
+// moves, not a human's typed-in claim, so it's never disputable by anyone
+// --- this reverses what an earlier version of this test (written under
+// decisions/0006, before 0011 existed) asserted.
+it("a mini-game's auto-logged result still shows a logger, but can never be disputed", async () => {
   const groupPath = await createGroup(`spec-dispute-group-${Date.now()}-minigame`);
   const challengerCookie = await register(groupPath, "Priya", "a-real-password");
   const opponentCookie = await register(groupPath, "Marcus", "a-real-password");
@@ -248,15 +253,81 @@ it("a mini-game's auto-logged result also shows a logger and accepts a dispute f
 
   const html = await (await fetch(new URL(groupPath, baseUrl), { headers: { cookie: opponentCookie } })).text();
   expect(html).toContain("logged-by");
+  expect(html, "a mini-game result should never render a dispute button, for any viewer").not.toContain("/dispute");
 
-  const resultId = await disputeFormResultId(groupPath, opponentCookie);
+  // Even hitting the route directly is rejected server-side, not just
+  // hidden from the UI. Neither the witness form nor the dispute form
+  // renders for a mini-game result (that's the whole point of this test),
+  // so there's no form to scrape an id from --- every result row instead
+  // carries its id as a plain `data-result-id` attribute (src/pages.ts),
+  // which is what this reads instead. Result ids are global, not per-group
+  // (see disputeFormResultId's comment above), so this still can't assume
+  // "1" --- it has to read the real id for this specific row.
+  const resultId = html.match(/data-result-id="(\d+)"/)?.[1];
+  expect(resultId, "expected the mini-game result to render with an id").toBeTruthy();
   const disputeRes = await fetch(new URL(`${groupPath}/results/${resultId}/dispute`, baseUrl), {
     method: "POST",
     headers: { cookie: opponentCookie },
     redirect: "manual",
   });
-  expect(disputeRes.status).toBe(303);
+  expect(disputeRes.status).toBe(200); // re-rendered with an error, never a redirect
+  expect(await disputeRes.text()).toContain("can't be disputed");
+});
 
-  const after = await (await fetch(new URL(groupPath, baseUrl))).text();
-  expect(after).toContain("disputed by 1 of 2 named");
+it("a mini-game result rejects a dispute even from someone with no connection to it at all", async () => {
+  const groupPath = await createGroup(`spec-dispute-group-${Date.now()}-minigame-stranger`);
+  const challengerCookie = await register(groupPath, "Priya", "a-real-password");
+  const opponentCookie = await register(groupPath, "Marcus", "a-real-password");
+  const opponentId = await memberId(groupPath, challengerCookie, "Marcus");
+  // A fresh member of the same group, named in nothing --- the mini-game
+  // dispute rejection has to fire before the "are you even a named
+  // participant" check gets a chance to, not because of it.
+  const strangerCookie = await register(groupPath, "Noor", "a-real-password");
+
+  const challengeRes = await fetch(new URL(`${groupPath}/games`, baseUrl), {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded", cookie: challengerCookie },
+    body: new URLSearchParams({ opponentId, game: "tic-tac-toe" }),
+    redirect: "manual",
+  });
+  expect(challengeRes.status).toBe(303);
+  const gamePath = challengeRes.headers.get("location")!;
+
+  const acceptRes = await fetch(new URL(`${gamePath}/accept`, baseUrl), {
+    method: "POST",
+    headers: { cookie: opponentCookie },
+    redirect: "manual",
+  });
+  expect(acceptRes.status).toBe(303);
+
+  const xMoves = [0, 1, 2];
+  const oMoves = [3, 4];
+  for (let i = 0; i < xMoves.length; i++) {
+    await fetch(new URL(`${gamePath}/move`, baseUrl), {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded", cookie: challengerCookie },
+      body: new URLSearchParams({ cell: String(xMoves[i]) }),
+      redirect: "manual",
+    });
+    if (i < oMoves.length) {
+      await fetch(new URL(`${gamePath}/move`, baseUrl), {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded", cookie: opponentCookie },
+        body: new URLSearchParams({ cell: String(oMoves[i]) }),
+        redirect: "manual",
+      });
+    }
+  }
+
+  const html = await (await fetch(new URL(groupPath, baseUrl), { headers: { cookie: strangerCookie } })).text();
+  const resultId = html.match(/data-result-id="(\d+)"/)?.[1];
+  expect(resultId, "expected the mini-game result to render with an id").toBeTruthy();
+
+  const disputeRes = await fetch(new URL(`${groupPath}/results/${resultId}/dispute`, baseUrl), {
+    method: "POST",
+    headers: { cookie: strangerCookie },
+    redirect: "manual",
+  });
+  expect(disputeRes.status).toBe(200);
+  expect(await disputeRes.text()).toContain("can't be disputed");
 });

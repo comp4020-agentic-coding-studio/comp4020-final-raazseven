@@ -2,6 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+import { GAME_NAMES } from "./minigames.ts";
 
 const dbPath = process.env.DB_PATH ?? "/data/app.db";
 mkdirSync(dirname(dbPath), { recursive: true });
@@ -100,12 +101,14 @@ db.exec(`
   -- number of winners and losers (a 2v1, a 3v3), not just exactly one of
   -- each. results.winner/loser (text) and winner_user_id/loser_user_id stay
   -- as the first name/id per side, for every render path and test that
-  -- predates team results; this table is the full roster.
+  -- predates team results; this table is the full roster. 'draw' (added
+  -- alongside decisions/0011) holds every participant when a manually-logged
+  -- result had no winner or loser at all.
   CREATE TABLE IF NOT EXISTS result_participants (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     result_id INTEGER NOT NULL REFERENCES results(id),
     user_id INTEGER NOT NULL REFERENCES users(id),
-    side TEXT NOT NULL CHECK (side IN ('winner', 'loser'))
+    side TEXT NOT NULL CHECK (side IN ('winner', 'loser', 'draw'))
   );
 
   -- One row per named participant who disputes a result
@@ -291,6 +294,24 @@ if (!resultColumns.some((c) => c.name === "logged_by_user_id")) {
   db.exec("ALTER TABLE results ADD COLUMN logged_by_user_id INTEGER REFERENCES users(id)");
 }
 
+// Migration: mini-game results aren't disputable, and manual results can
+// now log a draw (decisions/0011). `source` defaults to 'manual' so every
+// pre-existing row (including one logged before this column existed) is
+// treated as disputable, same fallback every earlier additive column on
+// this table already uses; the backfill just below corrects every row that
+// was ACTUALLY a mini-game result before this column existed, identified by
+// `game` matching one of the two mini-game names --- the only reliable
+// signal available, since there was never a source marker before now.
+if (!resultColumns.some((c) => c.name === "source")) {
+  db.exec("ALTER TABLE results ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'");
+  const minigameNames = Object.values(GAME_NAMES);
+  const placeholders = minigameNames.map(() => "?").join(",");
+  db.prepare(`UPDATE results SET source = 'minigame' WHERE game IN (${placeholders})`).run(...minigameNames);
+}
+if (!resultColumns.some((c) => c.name === "is_draw")) {
+  db.exec("ALTER TABLE results ADD COLUMN is_draw INTEGER NOT NULL DEFAULT 0");
+}
+
 // Migration: group_matches.logged_by_member_id was declared NOT NULL back
 // when a member was the only kind of account --- SQLite can't relax a NOT
 // NULL constraint with a plain ALTER TABLE, so this rebuilds the table the
@@ -416,6 +437,35 @@ for (const r of resultsNeedingBackfill) {
   insertParticipant.run(r.id, r.loser_user_id, "loser");
 }
 
+// Migration: result_participants.side's CHECK constraint only ever allowed
+// 'winner'/'loser' --- widening it to also allow 'draw' (decisions/0011, for
+// a manually-logged draw) needs a rebuild, SQLite can't alter a CHECK
+// constraint in place, same as the group_matches NOT NULL rebuild earlier in
+// this file. Guarded by reading the constraint text back out of
+// sqlite_master directly (there's no separate marker column for this, since
+// it's a schema-shape check, not a data-shape one) so this only ever runs
+// once.
+const resultParticipantsSchema = db
+  .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'result_participants'")
+  .get() as { sql: string } | undefined;
+if (resultParticipantsSchema && !resultParticipantsSchema.sql.includes("'draw'")) {
+  db.exec(`
+    ALTER TABLE result_participants RENAME TO result_participants_pre_draw;
+
+    CREATE TABLE result_participants (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      result_id INTEGER NOT NULL REFERENCES results(id),
+      user_id INTEGER NOT NULL REFERENCES users(id),
+      side TEXT NOT NULL CHECK (side IN ('winner', 'loser', 'draw'))
+    );
+
+    INSERT INTO result_participants (id, result_id, user_id, side)
+      SELECT id, result_id, user_id, side FROM result_participants_pre_draw;
+
+    DROP TABLE result_participants_pre_draw;
+  `);
+}
+
 export interface Avatar {
   avatar_blob: Buffer | null;
   avatar_mime: string | null;
@@ -496,6 +546,11 @@ export function tagsForGroup(groupId: number): Tag[] {
 
 export type WitnessStatus = "none" | "pending" | "confirmed" | "disputed";
 
+// decisions/0011: 'manual' is disputable (witnessable too, already); a
+// result the server computed from real mini-game moves is 'minigame' ---
+// nobody typed a claim in for it, so there's no human claim to dispute.
+export type ResultSource = "manual" | "minigame";
+
 export interface Result {
   id: number;
   group_id: number;
@@ -509,6 +564,12 @@ export interface Result {
   witness_user_id: number | null;
   witness_status: WitnessStatus;
   logged_by_user_id: number | null;
+  source: ResultSource;
+  // node:sqlite returns an INTEGER column as a plain JS number, never a real
+  // boolean --- 0 or 1, not false/true. Read with `=== 1` wherever this is
+  // checked, same as every other place this project reads a SQLite integer
+  // used as a flag.
+  is_draw: 0 | 1;
   created_at: string;
 }
 
@@ -583,6 +644,7 @@ export function addResult(
   loserIds: number[],
   witnessId?: number,
   loggedByUserId?: number,
+  source: ResultSource = "manual",
 ): Result {
   const winners = winnerIds.map((id) => getUserById(id)!);
   const losers = loserIds.map((id) => getUserById(id)!);
@@ -592,8 +654,8 @@ export function addResult(
   const info = db
     .prepare(
       `INSERT INTO results
-        (group_id, game, winner, loser, winner_user_id, loser_user_id, witness_user_id, witness_status, logged_by_user_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (group_id, game, winner, loser, winner_user_id, loser_user_id, witness_user_id, witness_status, logged_by_user_id, source, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       groupId,
@@ -605,6 +667,7 @@ export function addResult(
       witnessId ?? null,
       witnessStatus,
       loggedByUserId ?? null,
+      source,
       new Date().toISOString(),
     );
   const resultId = info.lastInsertRowid as number;
@@ -613,6 +676,36 @@ export function addResult(
   );
   for (const id of winnerIds) insertParticipant.run(resultId, id, "winner");
   for (const id of loserIds) insertParticipant.run(resultId, id, "loser");
+  return db.prepare("SELECT * FROM results WHERE id = ?").get(resultId) as unknown as Result;
+}
+
+/**
+ * Logs a draw between any number of people --- a manual-only outcome
+ * (decisions/0011: a server-computed mini-game result is never a disputable
+ * manual claim, and mini-games don't produce draws through this path at all
+ * --- `decisions/0004` already chose not to log a mini-game's draw). Every
+ * participant lands in `result_participants` with `side = 'draw'`; `winner`/
+ * `loser` (text) both store the same joined name list, since there's no
+ * winning or losing side to tell apart --- this keeps every existing render
+ * path that reads those columns from ever seeing an empty string, the same
+ * "never leave a column meaninglessly blank" posture the rest of this table
+ * already has.
+ */
+export function addDrawResult(groupId: number, game: string, participantIds: number[], loggedByUserId: number): Result {
+  const participants = participantIds.map((id) => getUserById(id)!);
+  const names = participants.map((u) => u.name).join(" & ");
+  const info = db
+    .prepare(
+      `INSERT INTO results
+        (group_id, game, winner, loser, winner_user_id, loser_user_id, witness_status, logged_by_user_id, source, is_draw, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'none', ?, 'manual', 1, ?)`,
+    )
+    .run(groupId, game, names, names, participantIds[0], participantIds[0], loggedByUserId, new Date().toISOString());
+  const resultId = info.lastInsertRowid as number;
+  const insertParticipant = db.prepare(
+    "INSERT INTO result_participants (result_id, user_id, side) VALUES (?, ?, 'draw')",
+  );
+  for (const id of participantIds) insertParticipant.run(resultId, id);
   return db.prepare("SELECT * FROM results WHERE id = ?").get(resultId) as unknown as Result;
 }
 
@@ -659,11 +752,15 @@ function participantUserIds(resultId: number): Set<number> {
  * one decision. `UNIQUE(result_id, disputed_by_user_id)` makes a repeat
  * dispute from the same person a no-op rather than a second row. Returns
  * `false` without writing anything if `userId` wasn't actually named on
- * either side, or logged the result themselves --- both checked here, not
- * just by the caller, so this is safe to call on its own. */
+ * either side, logged the result themselves, or the result is
+ * `source: 'minigame'` (decisions/0011 --- a server-computed outcome, not a
+ * human's claim, so there's nothing to dispute the way a manual log can be
+ * wrong or lying) --- all checked here, not just by the caller, so this is
+ * safe to call on its own. */
 export function addResultDispute(resultId: number, userId: number): boolean {
   const result = getResultById(resultId);
   if (!result) return false;
+  if (result.source === "minigame") return false;
   if (result.logged_by_user_id === userId) return false;
   if (!participantUserIds(resultId).has(userId)) return false;
   db.prepare(
@@ -698,7 +795,7 @@ export interface ResultParticipant {
 /** Every person on one side of a result, in the order they were logged ---
  * the full roster for a team result, where winner/loser (text) only ever
  * holds the first name. */
-export function participantsForResult(resultId: number, side: "winner" | "loser"): ResultParticipant[] {
+export function participantsForResult(resultId: number, side: "winner" | "loser" | "draw"): ResultParticipant[] {
   return db
     .prepare(
       `SELECT users.id, users.name FROM result_participants

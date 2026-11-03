@@ -63,6 +63,27 @@ function avatarImg(src: string, alt: string, size: "sm" | "md" | "lg" = "sm"): s
   }" height="${size === "lg" ? 56 : size === "md" ? 40 : 28}" />`;
 }
 
+// Toggles the log-result form between winner/loser selects and a single
+// "who drew" select (decisions/0011) --- progressive enhancement, same
+// posture as avatarChoiceScript below: with JS disabled, both sections are
+// simply visible together, `required` is never set client-side on either
+// (src/server.ts's own validation is what actually enforces "winner+loser OR
+// participants, not both/neither"), so submitting still works either way.
+const drawToggleScript = `
+(function () {
+  var checkbox = document.getElementById("is-draw");
+  var winnerLoser = document.getElementById("winner-loser-fields");
+  var drawFields = document.getElementById("draw-fields");
+  if (!checkbox || !winnerLoser || !drawFields) return;
+  function sync() {
+    winnerLoser.hidden = checkbox.checked;
+    drawFields.hidden = !checkbox.checked;
+  }
+  checkbox.addEventListener("change", sync);
+  sync();
+})();
+`;
+
 // Toggles the file input alongside the generate/upload radio choice below
 // it --- a progressive enhancement, not a dependency: with JS disabled both
 // controls are simply visible together and the file input isn't required,
@@ -493,7 +514,7 @@ export function statsPage(user: User, tallies: Array<{ friend: User; tally: Head
  * joined with "&" for a team --- falls back to the single denormalised name
  * (no link, no avatar) only if `participantsForResult` somehow has nothing,
  * which shouldn't happen for any result logged after team results shipped. */
-function sideNames(resultId: number, side: "winner" | "loser", fallbackName: string): string {
+function sideNames(resultId: number, side: "winner" | "loser" | "draw", fallbackName: string): string {
   const participants = participantsForResult(resultId, side);
   if (participants.length === 0) return escapeHtml(fallbackName);
   return participants
@@ -543,25 +564,31 @@ function loggedByLine(result: Result): string {
  * one decision between two states: every named winner/loser who disputes it
  * adds their own row, so this renders a running count plus (only for a
  * viewer who's actually eligible --- named on either side, didn't log it
- * themselves, hasn't already disputed it) a button to add their own.
- * Eligibility is re-checked server-side regardless of what this renders
- * (decisions/0006), the same client-renders-the-affordance,
+ * themselves, hasn't already disputed it) a button to add their own. A
+ * `source: 'minigame'` result (decisions/0011) is never disputable at all,
+ * by anyone --- it's the server's own observation of real moves, not a
+ * human's typed-in claim, so this returns nothing for it even before
+ * checking eligibility. Eligibility is re-checked server-side regardless of
+ * what this renders (decisions/0006), the same client-renders-the-affordance,
  * server-re-checks-the-rule pattern the owner-only "Remove member" button
  * already uses. */
 function disputeControls(result: Result, code: string, viewerId: number | undefined): string {
+  if (result.source === "minigame") return "";
   const disputes = disputesForResult(result.id);
   const alreadyDisputed = viewerId !== undefined && disputes.some((d) => d.disputed_by_user_id === viewerId);
-  const isParticipant =
-    viewerId !== undefined &&
-    (participantsForResult(result.id, "winner").some((p) => p.id === viewerId) ||
-      participantsForResult(result.id, "loser").some((p) => p.id === viewerId));
+  // A draw (decisions/0011) has no winner/loser --- everyone is `side:
+  // 'draw'` --- so eligibility has to check that side too, not just the two
+  // this function was originally written for before draws existed.
+  const namedParticipants =
+    result.is_draw === 1
+      ? participantsForResult(result.id, "draw")
+      : [...participantsForResult(result.id, "winner"), ...participantsForResult(result.id, "loser")];
+  const isParticipant = viewerId !== undefined && namedParticipants.some((p) => p.id === viewerId);
   const canDispute = isParticipant && viewerId !== result.logged_by_user_id && !alreadyDisputed;
 
   const countPill =
     disputes.length > 0
-      ? `<span class="witness-pill witness-disputed">disputed by ${disputes.length} of ${
-          participantsForResult(result.id, "winner").length + participantsForResult(result.id, "loser").length
-        } named</span>`
+      ? `<span class="witness-pill witness-disputed">disputed by ${disputes.length} of ${namedParticipants.length} named</span>`
       : "";
 
   if (!canDispute) return countPill;
@@ -576,12 +603,18 @@ export function resultsListFragment(group: Group, results: Result[], viewerId?: 
   }
   const rows = results
     .map((r) => {
-      return `<li class="result-row">
+      // A draw (decisions/0011) has one side, not two --- "winner"/"loser"
+      // (text) both hold the same joined name list for a draw (addDrawResult
+      // in src/db.ts), so this reads it back once rather than rendering the
+      // same names twice under two different labels.
+      const outcome =
+        r.is_draw === 1
+          ? `<span class="winner">${sideNames(r.id, "draw", r.winner)}</span><span>drew</span>`
+          : `<span class="winner">${sideNames(r.id, "winner", r.winner)}</span><span>beat</span><span class="loser">${sideNames(r.id, "loser", r.loser)}</span>`;
+      return `<li class="result-row" data-result-id="${r.id}">
         <div class="matchup">
           <span class="game">${escapeHtml(r.game)}</span>
-          <span class="winner">${sideNames(r.id, "winner", r.winner)}</span>
-          <span>beat</span>
-          <span class="loser">${sideNames(r.id, "loser", r.loser)}</span>
+          ${outcome}
           ${witnessBadge(r, group.code, viewerId)}
           ${disputeControls(r, group.code, viewerId)}
           ${loggedByLine(r)}
@@ -1125,10 +1158,20 @@ export function groupPage(
         <form method="post" action="/g/${code}/results">
           <label for="game">Game</label>
           <input id="game" name="game" required placeholder="e.g. FIFA, NBA 2K, basketball" />
-          <label for="winner-select">Winner(s)</label>
-          <select id="winner-select" name="winner" multiple required size="4">${memberOptions}</select>
-          <label for="loser-select">Loser(s)</label>
-          <select id="loser-select" name="loser" multiple required size="4">${memberOptions}</select>
+          <label class="radio-option" style="margin:-0.25rem 0 0.25rem">
+            <input type="checkbox" id="is-draw" name="isDraw" value="1" />
+            This was a draw
+          </label>
+          <div id="winner-loser-fields">
+            <label for="winner-select">Winner(s)</label>
+            <select id="winner-select" name="winner" multiple size="4">${memberOptions}</select>
+            <label for="loser-select">Loser(s)</label>
+            <select id="loser-select" name="loser" multiple size="4">${memberOptions}</select>
+          </div>
+          <div id="draw-fields" hidden>
+            <label for="draw-select">Who drew?</label>
+            <select id="draw-select" name="participants" multiple size="4">${memberOptions}</select>
+          </div>
           <label for="witness-select">Witness (optional)</label>
           <select id="witness-select" name="witness">${witnessOptions}</select>
           <p class="lede" style="font-size:0.75rem; margin:-0.25rem 0 0.5rem">Name a third member to vouch for this result --- it'll show as pending until they confirm or deny it.</p>
@@ -1219,7 +1262,7 @@ export function groupPage(
         <div id="group-matches-list">${groupMatchesFragment(group, groupMatches)}</div>
       </div>
     </div>`,
-    liveScript(group.code),
+    liveScript(group.code) + drawToggleScript,
     user,
   );
 }
@@ -1287,12 +1330,19 @@ function resultsListFragmentForProfile(results: Result[]): string {
   const rows = results
     .map((r) => {
       const group = getGroupById(r.group_id);
+      // A draw (decisions/0011) always lands under "teamed up," never
+      // "head-to-head" --- teamedUpResults() matches on both people sharing
+      // the same `side`, which a draw's participants always do (everyone is
+      // `side = 'draw'`) --- so this has to branch the same way
+      // resultsListFragment() does, not just assume every row here is a win.
+      const outcome =
+        r.is_draw === 1
+          ? `<span class="winner">${sideNames(r.id, "draw", r.winner)}</span><span>drew</span>`
+          : `<span class="winner">${sideNames(r.id, "winner", r.winner)}</span><span>beat</span><span class="loser">${sideNames(r.id, "loser", r.loser)}</span>`;
       return `<li class="result-row">
         <div class="matchup">
           <span class="game">${escapeHtml(r.game)}</span>
-          <span class="winner">${sideNames(r.id, "winner", r.winner)}</span>
-          <span>beat</span>
-          <span class="loser">${sideNames(r.id, "loser", r.loser)}</span>
+          ${outcome}
           ${group ? `<a class="lede" style="font-size:0.75rem" href="/g/${encodeURIComponent(group.code)}">in ${escapeHtml(group.name)}</a>` : ""}
         </div>
         <span class="when">${new Date(r.created_at).toLocaleString("en-AU", { dateStyle: "medium", timeStyle: "short" })}</span>
