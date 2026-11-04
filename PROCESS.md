@@ -20,9 +20,9 @@ setup gives the app one 256MB machine and one volume; the bar is "deployed
 and alive," not "scales." Node runs TypeScript directly, Fastify is a few
 dependencies, `node:sqlite` is built in — no native module, no separate
 database service. The choice has held since: crit 9 added one dependency
-(`@fastify/multipart`, for avatar uploads) and one new file (`src/live.ts`,
-an in-memory SSE pub-sub); crit 10 and everything below added schema and
-routes but no new infrastructure at all.
+(`@fastify/multipart`) and one new file (`src/live.ts`, an in-memory SSE
+pub-sub); crit 10 and everything below added schema and routes, no new
+infrastructure.
 
 ## Crits 8–10
 
@@ -41,72 +41,77 @@ model stopped surviving contact with how people actually use the app. Crit
 ([`121ed6c`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/121ed6c),
 [`decisions/0003`](decisions/0003-team-results-and-profile-visibility.md))
 added team results and per-person profiles, gated by the *viewer's* current
-membership rather than the target's — the server-checked permission
-decision the crit asked for — plus durable `audit_log` rows alongside the
-live request log. Each crit's own reflection
+membership rather than the target's, plus durable `audit_log` rows
+alongside the live request log. Each crit's own reflection
 (`reflections/crit-8.md`–`crit-10.md`) has the breakthrough and the mistake
 that shaped it; not restated here.
 
 ## Since crit 10: finishing the final project
 
-Ten rounds of work landed after crit 10's cutoff, continuing the same app
+Eleven rounds of work landed after crit 10's cutoff, continuing the same app
 toward the final submission rather than starting a new feature set. Each has
-its own ADR (`decisions/0004`–`0011`); summarized briefly here, not restated:
+its own ADR (`decisions/0004`–`0012`); summarized briefly here, not restated:
 
 a "liquid glass" visual pass and a fluid page width
 ([`2a7a16b`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/2a7a16b));
 **live mini-game challenges**, Tic-Tac-Toe and Rock-Paper-Scissors logging
-through the existing `addResult()`
+through `addResult()`
 ([`decisions/0004`](decisions/0004-mini-game-challenges.md)); **witness
-confirmation**, an optional third member who confirms or denies a manually-
-logged result
+confirmation**, an optional third member confirming or denying a manual
+result
 ([`decisions/0005`](decisions/0005-witness-confirmation.md)); **named-party
-disputes and logger attribution**, letting the actual winner/loser (not just
-a witness) raise a permanent dispute, after an audit found they'd had no say
-at all
+disputes and logger attribution**, letting the winner/loser themselves raise
+a permanent dispute, after an audit found they'd had no say at all
 ([`decisions/0006`](decisions/0006-named-party-disputes-and-logger-attribution.md));
 **challenge accept/decline** plus **a friend stats dashboard**
 ([`decisions/0007`](decisions/0007-minigame-challenge-accept.md)); **a
-site-wide notification popup** reaching any page, not just the one group's
+site-wide notification popup** reaching any page
 ([`decisions/0008`](decisions/0008-site-wide-challenge-notification.md)).
 
 **A real race condition, found by reproducing it, not guessing**
 ([`decisions/0009`](decisions/0009-challenge-ping-no-longer-reloads-the-page.md)):
-accepting a challenge sometimes left the acceptor on the group page instead
-of the game — the accept route's own broadcast raced the acceptor's own
-navigation. Reproduced with two real browser contexts, fixed with a
-fetch-and-swap instead of `location.reload()`, re-verified 5/5 clean.
+accepting a challenge sometimes left the acceptor on the group page, not
+the game — the accept route's own broadcast raced their navigation. Fixed
+with a fetch-and-swap instead of `location.reload()`, re-verified 5/5 clean.
 
 **A phone-width layout bug**
-([`838b66a`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/838b66a)),
-found testing real phone viewports: two player names in an unguarded flex
-row overflowed a 390px viewport by 150px, fixed with `flex-wrap` and
-`min-width: 0`. Added as a new `CLAUDE.md` rule.
+([`838b66a`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/838b66a)):
+two player names in an unguarded flex row overflowed a 390px viewport by
+150px, found testing real phone viewports, fixed with `flex-wrap` and
+`min-width: 0`, added as a new `CLAUDE.md` rule.
 
 **Forfeiting, and telling the challenger what happened to their own game**
 ([`decisions/0010`](decisions/0010-forfeit-and-challenger-notification.md)):
-reported that the challenger never found out their challenge was accepted
-unless they stayed on the exact game page — reproduced with two browsers,
-confirmed the per-user notification only ever told the *opponent*, never the
-challenger. Fixed by notifying both, and added the other half of "a
-mini-game is a real result": an explicit Forfeit button, plus an automatic
-forfeit after a 30-second grace period on a dropped connection (long enough
-to survive a refresh, short enough to resolve a real departure) — both log
-through the same `addResult()` a normal win uses. A follow-up caught the
-popup's "View game" button never calling the route that marks its notice
-seen — fixed by routing it through the same acknowledge call as "Dismiss,"
-which also surfaced a real crash (`req.body` is `undefined`, not `{}`, for
-a request with no body at all).
+the challenger never found out their challenge was accepted unless they
+stayed on the exact game page — reproduced with two browsers, confirmed the
+per-user notification only told the *opponent*. Fixed by notifying both,
+and added an explicit Forfeit button plus an automatic forfeit after a
+30-second disconnect grace period, both logging through the same
+`addResult()` a normal win uses. A follow-up fixed the popup's "View game"
+button never clearing its own notice, which also surfaced a real crash
+(`req.body` is `undefined`, not `{}`, for a request with no body at all).
 
 **A mini-game result can't be disputed; a manual result can record a draw**
 ([`decisions/0011`](decisions/0011-minigame-results-never-disputable-draws-logged.md)):
 `decisions/0006`'s dispute mechanism fit a possibly-false human claim, not a
 mini-game's server-computed result, so that one's dispute button never
-renders and the route rejects it server-side regardless, checked ahead of
-any eligibility rule so it's uncontestable by construction. Separately,
-`results` gained a real draw, closing the gap `decisions/0004` had
-explicitly left open. Checked with the person first that neither change
-would touch `research-note.md`'s argument before building either.
+renders and the route rejects it server-side regardless. Separately,
+`results` gained a real draw, closing the gap `decisions/0004` had left
+open. Checked with the person first that neither change touched
+`research-note.md`'s argument before building either.
+
+**A draw rebuilt as two sides, not a flat list**
+([`decisions/0012`](decisions/0012-two-sided-results-replace-flat-draw.md)):
+a draw's single "who drew" list couldn't record a tied *team* match
+("Priya & Jordan drew with Marcus & Noor"), and the player-select boxes
+didn't line up with the rest of the form (`select` never had `input`'s
+`width: 100%`). Replaced the checkbox-gated third field group with one
+"Side A"/"Side B" pair plus an outcome radio, so every result goes through
+the same `addResult()` and a draw keeps both sides on record. Caught before
+shipping: reusing `'winner'`/`'loser'` for a draw's sides removed a free
+exclusion the old shape gave `headToHeadTally`, which would have silently
+counted a draw as a win --- added the explicit filter and a test proving a
+draw counts as neither.
 
 ## Process discipline: corrections became rules, not one-off fixes
 
@@ -119,26 +124,24 @@ migration rules (never drop a column, rebuild instead of relaxing
 formbody-vs-multipart rule exists because signup, login, and the
 group-profile route were each built with manual multipart parsing once, for
 no file field any of them had. The real-time rule — check
-`spec/live-updates.test.ts`'s existing broadcast before changing how a
-result is created — exists because splitting global signup from group-join
-once silently dropped the `member` SSE event the old combined route sent.
-The `uniqueName()` test rule and `vitest.config.ts`'s `fileParallelism:
-false` both came from one incident: globally-unique names broke a dozen
-tests at once, all reporting as timeouts, which looked like a server
-regression until isolating one file separated the real bug (two spec files
-reusing the literal name "Priya") from parallelism noise.
+`spec/live-updates.test.ts`'s broadcast before changing how a result is
+created — exists because splitting global signup from group-join once
+silently dropped the `member` SSE event the old combined route sent. The
+`uniqueName()` test rule and `fileParallelism: false` both came from one
+incident: globally-unique names broke a dozen tests at once, all reporting
+as timeouts, which looked like a server regression until isolating one file
+separated the real bug (two spec files reusing the literal name "Priya")
+from parallelism noise.
 
 ## Verification discipline
 
-`pnpm check` is 117/117 clean as of
-[`8bbee24`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/8bbee24).
+`pnpm check` is 120/120 clean as of
+[`979c924`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-raazseven/commit/979c924).
 Every session has re-verified past what the test suite alone can show:
 SSH'ing into the live machine to confirm a migration landed on
 `/data/app.db`, re-opening the live SSE stream after a deploy that "wasn't
 about real-time," race conditions reproduced with two real browser contexts
-rather than assumed from reading the code (an accept-redirect race, an
-automatic-forfeit timer against a genuine 30-second wait), and a full pass
-on real phone emulation rather than a resized desktop window.
-`research-log/index0.md` is the running account of what each session
-actually tried, including the mistakes — this file is the current snapshot;
-that one is the history.
+rather than assumed from reading the code, and a full pass on real phone
+emulation rather than a resized desktop window. `research-log/index0.md` is
+the running account of what each session actually tried, including the
+mistakes — this file is the current snapshot; that one is the history.
