@@ -91,7 +91,7 @@ it("a result can't be logged against someone who isn't a member of the group", a
   });
   expect(logRes.status).toBe(200); // re-rendered with an error, not redirected
   const html = await logRes.text();
-  expect(html).toContain("must both be members of this group");
+  expect(html).toContain("everyone named must be a member of this group");
 
   const after = await fetch(new URL(groupPath, baseUrl));
   expect(await after.text()).not.toContain("FIFA");
@@ -109,7 +109,7 @@ it("winner and loser can't be the same player", async () => {
     redirect: "manual",
   });
   expect(logRes.status).toBe(200);
-  expect(await logRes.text()).toContain("can't be the same player");
+  expect(await logRes.text()).toContain("can't be on both sides");
 });
 
 it("logging back in after logging out requires the password again, and the stale session can't log a result", async () => {

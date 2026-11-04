@@ -63,27 +63,6 @@ function avatarImg(src: string, alt: string, size: "sm" | "md" | "lg" = "sm"): s
   }" height="${size === "lg" ? 56 : size === "md" ? 40 : 28}" />`;
 }
 
-// Toggles the log-result form between winner/loser selects and a single
-// "who drew" select (decisions/0011) --- progressive enhancement, same
-// posture as avatarChoiceScript below: with JS disabled, both sections are
-// simply visible together, `required` is never set client-side on either
-// (src/server.ts's own validation is what actually enforces "winner+loser OR
-// participants, not both/neither"), so submitting still works either way.
-const drawToggleScript = `
-(function () {
-  var checkbox = document.getElementById("is-draw");
-  var winnerLoser = document.getElementById("winner-loser-fields");
-  var drawFields = document.getElementById("draw-fields");
-  if (!checkbox || !winnerLoser || !drawFields) return;
-  function sync() {
-    winnerLoser.hidden = checkbox.checked;
-    drawFields.hidden = !checkbox.checked;
-  }
-  checkbox.addEventListener("change", sync);
-  sync();
-})();
-`;
-
 // Toggles the file input alongside the generate/upload radio choice below
 // it --- a progressive enhancement, not a dependency: with JS disabled both
 // controls are simply visible together and the file input isn't required,
@@ -312,7 +291,7 @@ export function newGroupPage(user: User, opts: NewGroupPageOptions = {}): string
         <p class="lede" style="font-size:0.8rem; margin:-0.25rem 0 0.5rem">Pick at least one, or add your own below.</p>
         ${tagPicker(prefill.tagIds ?? [], prefill.customTags ?? "")}
         <label>Group photo</label>
-        <div class="avatar-choice">
+        <div class="radio-row">
           <label class="radio-option"><input type="radio" name="avatarChoice" value="generate" checked /> Generate one for me</label>
           <label class="radio-option"><input type="radio" name="avatarChoice" value="upload" /> Upload a photo</label>
         </div>
@@ -576,12 +555,14 @@ function disputeControls(result: Result, code: string, viewerId: number | undefi
   if (result.source === "minigame") return "";
   const disputes = disputesForResult(result.id);
   const alreadyDisputed = viewerId !== undefined && disputes.some((d) => d.disputed_by_user_id === viewerId);
-  // A draw (decisions/0011) has no winner/loser --- everyone is `side:
-  // 'draw'` --- so eligibility has to check that side too, not just the two
-  // this function was originally written for before draws existed.
+  // A draw (decisions/0012) has two sides, same `'winner'`/`'loser'` values
+  // as a scored result --- the fallback to the legacy flat `'draw'` value
+  // only matters for a result logged in the short window between
+  // decisions/0011 and 0012 (see outcomeLine's comment above).
+  const legacyFlatDraw = participantsForResult(result.id, "draw");
   const namedParticipants =
-    result.is_draw === 1
-      ? participantsForResult(result.id, "draw")
+    legacyFlatDraw.length > 0
+      ? legacyFlatDraw
       : [...participantsForResult(result.id, "winner"), ...participantsForResult(result.id, "loser")];
   const isParticipant = viewerId !== undefined && namedParticipants.some((p) => p.id === viewerId);
   const canDispute = isParticipant && viewerId !== result.logged_by_user_id && !alreadyDisputed;
@@ -597,31 +578,43 @@ function disputeControls(result: Result, code: string, viewerId: number | undefi
   </form>`;
 }
 
+/** Renders a result's matchup line --- "Side A beat Side B" for a scored
+ * result, "Side A drew with Side B" for a draw. A draw (decisions/0012)
+ * keeps two sides, `winner`/`side: 'winner'` and `loser`/`side: 'loser'`
+ * same as a scored result; `is_draw` only changes the word between them,
+ * not which columns hold which names. Falls back to the flat, one-sided
+ * shape (`side: 'draw'` for everyone, decisions/0011's short-lived original
+ * draw format) only if a result has participant rows under `'draw'` at all
+ * --- nothing logged after 0012 ever does, so this only ever matters for a
+ * result logged in the narrow window between 0011 and 0012 shipping. */
+function outcomeLine(r: Result): string {
+  const legacyFlatDraw = participantsForResult(r.id, "draw");
+  if (legacyFlatDraw.length > 0) {
+    return `<span class="winner">${sideNames(r.id, "draw", r.winner)}</span><span>drew</span>`;
+  }
+  if (r.is_draw === 1) {
+    return `<span class="winner">${sideNames(r.id, "winner", r.winner)}</span><span>drew with</span><span class="winner">${sideNames(r.id, "loser", r.loser)}</span>`;
+  }
+  return `<span class="winner">${sideNames(r.id, "winner", r.winner)}</span><span>beat</span><span class="loser">${sideNames(r.id, "loser", r.loser)}</span>`;
+}
+
 export function resultsListFragment(group: Group, results: Result[], viewerId?: number): string {
   if (results.length === 0) {
     return `<p class="empty">No results yet. Be the first to log one.</p>`;
   }
   const rows = results
-    .map((r) => {
-      // A draw (decisions/0011) has one side, not two --- "winner"/"loser"
-      // (text) both hold the same joined name list for a draw (addDrawResult
-      // in src/db.ts), so this reads it back once rather than rendering the
-      // same names twice under two different labels.
-      const outcome =
-        r.is_draw === 1
-          ? `<span class="winner">${sideNames(r.id, "draw", r.winner)}</span><span>drew</span>`
-          : `<span class="winner">${sideNames(r.id, "winner", r.winner)}</span><span>beat</span><span class="loser">${sideNames(r.id, "loser", r.loser)}</span>`;
-      return `<li class="result-row" data-result-id="${r.id}">
+    .map(
+      (r) => `<li class="result-row" data-result-id="${r.id}">
         <div class="matchup">
           <span class="game">${escapeHtml(r.game)}</span>
-          ${outcome}
+          ${outcomeLine(r)}
           ${witnessBadge(r, group.code, viewerId)}
           ${disputeControls(r, group.code, viewerId)}
           ${loggedByLine(r)}
         </div>
         <span class="when">${new Date(r.created_at).toLocaleString("en-AU", { dateStyle: "medium", timeStyle: "short" })}</span>
-      </li>`;
-    })
+      </li>`,
+    )
     .join("\n");
   return `<ul class="results-list">${rows}</ul>`;
 }
@@ -1158,19 +1151,15 @@ export function groupPage(
         <form method="post" action="/g/${code}/results">
           <label for="game">Game</label>
           <input id="game" name="game" required placeholder="e.g. FIFA, NBA 2K, basketball" />
-          <label class="radio-option" style="margin:-0.25rem 0 0.25rem">
-            <input type="checkbox" id="is-draw" name="isDraw" value="1" />
-            This was a draw
-          </label>
-          <div id="winner-loser-fields">
-            <label for="winner-select">Winner(s)</label>
-            <select id="winner-select" name="winner" multiple size="4">${memberOptions}</select>
-            <label for="loser-select">Loser(s)</label>
-            <select id="loser-select" name="loser" multiple size="4">${memberOptions}</select>
-          </div>
-          <div id="draw-fields" hidden>
-            <label for="draw-select">Who drew?</label>
-            <select id="draw-select" name="participants" multiple size="4">${memberOptions}</select>
+          <label for="winner-select">Side A</label>
+          <select id="winner-select" name="winner" multiple size="4">${memberOptions}</select>
+          <label for="loser-select">Side B</label>
+          <select id="loser-select" name="loser" multiple size="4">${memberOptions}</select>
+          <label>Outcome</label>
+          <div class="radio-row">
+            <label class="radio-option"><input type="radio" name="outcome" value="a" checked /> Side A won</label>
+            <label class="radio-option"><input type="radio" name="outcome" value="b" /> Side B won</label>
+            <label class="radio-option"><input type="radio" name="outcome" value="draw" /> Draw</label>
           </div>
           <label for="witness-select">Witness (optional)</label>
           <select id="witness-select" name="witness">${witnessOptions}</select>
@@ -1262,7 +1251,7 @@ export function groupPage(
         <div id="group-matches-list">${groupMatchesFragment(group, groupMatches)}</div>
       </div>
     </div>`,
-    liveScript(group.code) + drawToggleScript,
+    liveScript(group.code),
     user,
   );
 }
@@ -1330,19 +1319,10 @@ function resultsListFragmentForProfile(results: Result[]): string {
   const rows = results
     .map((r) => {
       const group = getGroupById(r.group_id);
-      // A draw (decisions/0011) always lands under "teamed up," never
-      // "head-to-head" --- teamedUpResults() matches on both people sharing
-      // the same `side`, which a draw's participants always do (everyone is
-      // `side = 'draw'`) --- so this has to branch the same way
-      // resultsListFragment() does, not just assume every row here is a win.
-      const outcome =
-        r.is_draw === 1
-          ? `<span class="winner">${sideNames(r.id, "draw", r.winner)}</span><span>drew</span>`
-          : `<span class="winner">${sideNames(r.id, "winner", r.winner)}</span><span>beat</span><span class="loser">${sideNames(r.id, "loser", r.loser)}</span>`;
       return `<li class="result-row">
         <div class="matchup">
           <span class="game">${escapeHtml(r.game)}</span>
-          ${outcome}
+          ${outcomeLine(r)}
           ${group ? `<a class="lede" style="font-size:0.75rem" href="/g/${encodeURIComponent(group.code)}">in ${escapeHtml(group.name)}</a>` : ""}
         </div>
         <span class="when">${new Date(r.created_at).toLocaleString("en-AU", { dateStyle: "medium", timeStyle: "short" })}</span>

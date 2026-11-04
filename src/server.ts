@@ -3,7 +3,6 @@ import formbody from "@fastify/formbody";
 import cookie from "@fastify/cookie";
 import multipart from "@fastify/multipart";
 import {
-  addDrawResult,
   addGroupMatch,
   addResult,
   addResultDispute,
@@ -515,8 +514,7 @@ app.post<{
     winner: string | string[];
     loser: string | string[];
     witness?: string;
-    isDraw?: string;
-    participants?: string | string[];
+    outcome?: "a" | "b" | "draw";
   };
 }>("/g/:code/results", async (req, reply) => {
   const group = getGroupByCode(req.params.code.toUpperCase());
@@ -535,59 +533,41 @@ app.post<{
     return reply.type("text/html").send(renderGroupPage(group, user, { resultError: "a game is required" }));
   }
 
-  // decisions/0011: a draw is a completely separate shape from a
-  // winner/loser result --- one set of people, no split --- so this branches
-  // on the checkbox before touching winner/loser at all, rather than trying
-  // to squeeze both shapes through one validation path.
-  if (req.body.isDraw === "1") {
-    const participantIds = idSet(req.body.participants);
-    if (participantIds.size < 2) {
-      return reply
-        .type("text/html")
-        .send(renderGroupPage(group, user, { resultError: "a draw needs at least two people" }));
-    }
-    const allMembers = [...participantIds].every((id) => memberInGroup(group.id, id));
-    if (!allMembers) {
-      return reply
-        .type("text/html")
-        .send(renderGroupPage(group, user, { resultError: "everyone in a draw must be a member of this group" }));
-    }
-    const result = addDrawResult(group.id, game, [...participantIds], user.id);
-    record(req, user.id, "result.create", group.id, `"${user.name}" logged ${game}: ${result.winner} drew in "${group.name}"`);
-    broadcast(group.code, { type: "result", html: resultsListFragment(group, resultsForGroup(group.id)) });
-    return reply.redirect(`/g/${group.code}`, 303);
-  }
-
-  const winnerIds = idSet(req.body.winner);
-  const loserIds = idSet(req.body.loser);
-  if (winnerIds.size === 0 || loserIds.size === 0) {
+  // decisions/0012: every outcome (a scored win/loss or a draw) collects the
+  // same two sides and runs the same validation --- only which field ends
+  // up as addResult()'s winnerIds/loserIds, and whether isDraw is set,
+  // differs by outcome. `outcome` defaults to "a" (Side A won) when absent,
+  // so every pre-existing caller that only ever posted {winner, loser} with
+  // no outcome field at all keeps working exactly as before.
+  const sideAIds = idSet(req.body.winner);
+  const sideBIds = idSet(req.body.loser);
+  if (sideAIds.size === 0 || sideBIds.size === 0) {
     return reply
       .type("text/html")
-      .send(renderGroupPage(group, user, { resultError: "at least one winner and at least one loser are required" }));
+      .send(renderGroupPage(group, user, { resultError: "each side needs at least one player" }));
   }
   // A side can be a team (any number of people), but no one can be on
   // both sides of the same result --- the original single-id check
   // generalized to a set-intersection one.
-  const overlap = [...winnerIds].some((id) => loserIds.has(id));
+  const overlap = [...sideAIds].some((id) => sideBIds.has(id));
   if (overlap) {
     return reply
       .type("text/html")
-      .send(renderGroupPage(group, user, { resultError: "winner and loser can't be the same player" }));
+      .send(renderGroupPage(group, user, { resultError: "the same player can't be on both sides" }));
   }
   // Everyone named has to already be a member of this group --- a result
   // can't be logged against someone who was never there.
-  const allMembers = [...winnerIds, ...loserIds].every((id) => memberInGroup(group.id, id));
+  const allMembers = [...sideAIds, ...sideBIds].every((id) => memberInGroup(group.id, id));
   if (!allMembers) {
     return reply
       .type("text/html")
-      .send(renderGroupPage(group, user, { resultError: "winner and loser must both be members of this group" }));
+      .send(renderGroupPage(group, user, { resultError: "everyone named must be a member of this group" }));
   }
 
   // A witness is optional (decisions/0005-witness-confirmation.md) --- this
   // app's trust-based logging model is unchanged when no one names one.
   // When named, they have to be a real group member not already on either
-  // side --- a winner or loser vouching for their own result defeats the
-  // point.
+  // side --- someone vouching for their own result defeats the point.
   let witnessId: number | undefined;
   const rawWitness = req.body.witness?.trim();
   if (rawWitness) {
@@ -597,21 +577,28 @@ app.post<{
         .type("text/html")
         .send(renderGroupPage(group, user, { resultError: "the witness must be a member of this group" }));
     }
-    if (winnerIds.has(candidate) || loserIds.has(candidate)) {
+    if (sideAIds.has(candidate) || sideBIds.has(candidate)) {
       return reply
         .type("text/html")
-        .send(renderGroupPage(group, user, { resultError: "the witness can't also be a winner or loser" }));
+        .send(renderGroupPage(group, user, { resultError: "the witness can't already be named on either side" }));
     }
     witnessId = candidate;
   }
 
-  const result = addResult(group.id, game, [...winnerIds], [...loserIds], witnessId, user.id);
+  const outcome = req.body.outcome === "b" || req.body.outcome === "draw" ? req.body.outcome : "a";
+  const isDraw = outcome === "draw";
+  // "b" swaps which side addResult() sees as winnerIds/loserIds --- for a
+  // draw it doesn't matter which side is which, since is_draw says neither
+  // one actually won.
+  const [winnerIds, loserIds] = outcome === "b" ? [sideBIds, sideAIds] : [sideAIds, sideBIds];
+
+  const result = addResult(group.id, game, [...winnerIds], [...loserIds], witnessId, user.id, "manual", isDraw);
   record(
     req,
     user.id,
     "result.create",
     group.id,
-    `"${user.name}" logged ${game}: ${result.winner} beat ${result.loser} in "${group.name}"` +
+    `"${user.name}" logged ${game}: ${result.winner} ${isDraw ? "drew with" : "beat"} ${result.loser} in "${group.name}"` +
       (witnessId ? ` (witnessed by user ${witnessId})` : ""),
   );
   broadcast(group.code, { type: "result", html: resultsListFragment(group, resultsForGroup(group.id)) });

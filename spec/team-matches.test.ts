@@ -58,7 +58,7 @@ it("the same player can't be on both sides of a result", async () => {
     redirect: "manual",
   });
   expect(logRes.status).toBe(200); // re-rendered with an error, not redirected
-  expect(await logRes.text()).toContain("can't be the same player");
+  expect(await logRes.text()).toContain("can't be on both sides");
 });
 
 it("a duplicate id within one side is deduped, not rejected", async () => {
@@ -106,7 +106,7 @@ it("every participant on either side has to be a member of this group", async ()
     redirect: "manual",
   });
   expect(logRes.status).toBe(200);
-  expect(await logRes.text()).toContain("must both be members of this group");
+  expect(await logRes.text()).toContain("everyone named must be a member of this group");
 
   const after = await (await fetch(new URL(groupPath, baseUrl))).text();
   expect(after).not.toContain("Pool");

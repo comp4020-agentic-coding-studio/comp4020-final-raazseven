@@ -153,7 +153,7 @@ it("a witness can't be a winner or loser on the same result", async () => {
     redirect: "manual",
   });
   expect(logRes.status).toBe(200);
-  expect(await logRes.text()).toContain("witness can't also be a winner or loser");
+  expect(await logRes.text()).toContain("witness can't already be named on either side");
 });
 
 it("a decision can't be replayed once the witness has already answered", async () => {

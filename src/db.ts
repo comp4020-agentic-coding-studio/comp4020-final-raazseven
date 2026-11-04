@@ -636,6 +636,17 @@ export function updateGroupProfile(groupId: number, bio: string, tagIds: number[
  * predates team results reads those columns, so they stay populated and
  * accurate for a 1v1; `result_participants` is the full roster for a side
  * with more than one person.
+ *
+ * `isDraw` (decisions/0012) doesn't change which side is which --- the
+ * caller still passes "Side A" as `winnerIds` and "Side B" as `loserIds`,
+ * same two params as a scored result --- it only sets `is_draw = 1` so
+ * readers (`resultsListFragment`, `headToHeadTally`) know not to treat
+ * either side as having actually won or lost. This replaces the earlier
+ * `addDrawResult()` (decisions/0011), which recorded every drawn
+ * participant under one flat `side = 'draw'` and lost which two sides had
+ * been tied against each other; every result, scored or drawn, now goes
+ * through this one path so a draw keeps its sides on record the same way a
+ * win/loss always has.
  */
 export function addResult(
   groupId: number,
@@ -645,6 +656,7 @@ export function addResult(
   witnessId?: number,
   loggedByUserId?: number,
   source: ResultSource = "manual",
+  isDraw = false,
 ): Result {
   const winners = winnerIds.map((id) => getUserById(id)!);
   const losers = loserIds.map((id) => getUserById(id)!);
@@ -654,8 +666,8 @@ export function addResult(
   const info = db
     .prepare(
       `INSERT INTO results
-        (group_id, game, winner, loser, winner_user_id, loser_user_id, witness_user_id, witness_status, logged_by_user_id, source, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (group_id, game, winner, loser, winner_user_id, loser_user_id, witness_user_id, witness_status, logged_by_user_id, source, is_draw, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       groupId,
@@ -668,6 +680,7 @@ export function addResult(
       witnessStatus,
       loggedByUserId ?? null,
       source,
+      isDraw ? 1 : 0,
       new Date().toISOString(),
     );
   const resultId = info.lastInsertRowid as number;
@@ -676,36 +689,6 @@ export function addResult(
   );
   for (const id of winnerIds) insertParticipant.run(resultId, id, "winner");
   for (const id of loserIds) insertParticipant.run(resultId, id, "loser");
-  return db.prepare("SELECT * FROM results WHERE id = ?").get(resultId) as unknown as Result;
-}
-
-/**
- * Logs a draw between any number of people --- a manual-only outcome
- * (decisions/0011: a server-computed mini-game result is never a disputable
- * manual claim, and mini-games don't produce draws through this path at all
- * --- `decisions/0004` already chose not to log a mini-game's draw). Every
- * participant lands in `result_participants` with `side = 'draw'`; `winner`/
- * `loser` (text) both store the same joined name list, since there's no
- * winning or losing side to tell apart --- this keeps every existing render
- * path that reads those columns from ever seeing an empty string, the same
- * "never leave a column meaninglessly blank" posture the rest of this table
- * already has.
- */
-export function addDrawResult(groupId: number, game: string, participantIds: number[], loggedByUserId: number): Result {
-  const participants = participantIds.map((id) => getUserById(id)!);
-  const names = participants.map((u) => u.name).join(" & ");
-  const info = db
-    .prepare(
-      `INSERT INTO results
-        (group_id, game, winner, loser, winner_user_id, loser_user_id, witness_status, logged_by_user_id, source, is_draw, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, 'none', ?, 'manual', 1, ?)`,
-    )
-    .run(groupId, game, names, names, participantIds[0], participantIds[0], loggedByUserId, new Date().toISOString());
-  const resultId = info.lastInsertRowid as number;
-  const insertParticipant = db.prepare(
-    "INSERT INTO result_participants (result_id, user_id, side) VALUES (?, ?, 'draw')",
-  );
-  for (const id of participantIds) insertParticipant.run(resultId, id);
   return db.prepare("SELECT * FROM results WHERE id = ?").get(resultId) as unknown as Result;
 }
 
@@ -880,7 +863,15 @@ export interface HeadToHeadTally {
  * viewer was on) without a second query per result. Same visibility
  * boundary as `headToHeadResults` (decisions/0003): only groups `viewerId`
  * currently belongs to count, so leaving every shared group drops this to
- * zero the same way it already drops the raw results list. */
+ * zero the same way it already drops the raw results list.
+ *
+ * `is_draw = 0` is explicit here (decisions/0012) --- a draw's two sides are
+ * now `'winner'`/`'loser'` too (not a separate flat `'draw'` value), so
+ * without this filter a drawn result would silently count as a win for
+ * whoever happened to be on the `'winner'` side, which isn't what a draw
+ * means. `headToHeadResults`/`teamedUpResults` (raw history, not this tally)
+ * deliberately have no such filter --- a draw is still real history worth
+ * showing there, just not a counted win or loss here. */
 export function headToHeadTally(viewerId: number, otherId: number): HeadToHeadTally {
   const viewerGroupIds = membershipsForUser(viewerId).map((m) => m.group.id);
   if (viewerGroupIds.length === 0) return { overallWins: 0, overallLosses: 0, byGame: [] };
@@ -891,7 +882,7 @@ export function headToHeadTally(viewerId: number, otherId: number): HeadToHeadTa
        FROM results
        JOIN result_participants AS viewer_side ON viewer_side.result_id = results.id AND viewer_side.user_id = ?
        JOIN result_participants AS other_side ON other_side.result_id = results.id AND other_side.user_id = ?
-       WHERE viewer_side.side != other_side.side AND results.group_id IN (${placeholders})
+       WHERE viewer_side.side != other_side.side AND results.is_draw = 0 AND results.group_id IN (${placeholders})
        GROUP BY results.game, viewer_side.side
        ORDER BY results.game COLLATE NOCASE ASC`,
     )

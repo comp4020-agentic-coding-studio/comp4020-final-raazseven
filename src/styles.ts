@@ -432,14 +432,16 @@ export const baseStyles = `
     accent-color: var(--accent);
   }
 
-  .avatar-choice {
+  /* A row of radio options, e.g. avatar generate-vs-upload (newGroupPage) or
+     a result's outcome (Side A / Side B / Draw) in the log-result form. */
+  .radio-row {
     display: flex;
     flex-wrap: wrap;
     gap: 0.4rem 1.25rem;
     margin-bottom: 0.25rem;
   }
 
-  .avatar-choice .radio-option {
+  .radio-row .radio-option {
     display: flex;
     align-items: center;
     gap: 0.4rem;
@@ -656,6 +658,11 @@ export const baseStyles = `
     backdrop-filter: blur(var(--glass-blur));
     -webkit-backdrop-filter: blur(var(--glass-blur));
     color: var(--text);
+    /* Unlike <input>, a <select> was never given this --- it sized to its
+       own intrinsic width instead of stretching to match the rest of the
+       form (the Game field above it, say), which is what "the player boxes
+       don't line up" actually was. */
+    width: 100%;
   }
 
   select:focus {
