@@ -693,3 +693,71 @@ against a single confirmed fresh server process (killed and restarted after
 editing `src/pages.ts`, since an earlier run against a stale already-running
 process produced one failure that was the test correctly catching old code,
 not a real regression).
+
+## 2026-11-04
+
+Reported directly, right after pushing decisions/0011: a draw rendering as
+one flat "Priya & Marcus drew" list can't say anything once it's a tied team
+match, not two individuals --- "Priya & Jordan drew with Marcus & Noor" has
+no way to come out of a single "who drew?" select. Two more complaints came
+with it in the same message: "Winner(s)"/"Loser(s)" don't fit once the same
+boxes also serve a draw, and the player-selection boxes don't visually line
+up with the rest of the form.
+
+Read the CSS before guessing at the misalignment: `input` has had
+`width: 100%` since early in the project (a documented fix for exactly this
+shape of bug, per the CLAUDE.md rule it produced), `select` never did ---
+every multi-select in the result form sized to its own intrinsic width
+instead of stretching to match the Game field above it. One missing rule,
+not a layout bug needing a new mechanism.
+
+The deeper issue was the shape decisions/0011 chose for a draw: a third,
+checkbox-toggled field group (one flat "who drew" select) bolted onto the
+existing two-field win/loss group, with every drawn participant stored under
+one `side = 'draw'` value. That shape assumed a draw has no sides at all,
+true for two individuals but false for a tied team match --- reproducing, in
+the manual path, the exact gap decisions/0004 had already left open for a
+mini-game's draw.
+
+Asked the person three concrete design questions before touching code
+(two-sided draw vs. flat list; "Side A"/"Side B" plus an outcome picker vs.
+just renaming "Won"/"Lost"; whether "one group win against another" meant
+folding `group_matches` into this same form) rather than guessing at the
+intended shape --- all three came back as the more structural option.
+Wrote `decisions/0012-two-sided-results-replace-flat-draw.md` before coding.
+
+Design: one pair of selects, relabelled "Side A"/"Side B" (DOM ids/names
+unchanged, so the existing live-member-list swap in `liveScript` needed no
+change), plus a new three-way outcome radio ("Side A won"/"Side B won"/
+"Draw") replacing the checkbox and the third field group entirely.
+`addDrawResult()` is deleted --- every result, scored or drawn, now goes
+through `addResult()` (which gained an `isDraw` flag), recording both sides
+under the same `'winner'`/`'loser'` `side` values a scored result already
+uses, so a tied team match keeps which pair opposed which on record instead
+of flattening everyone into one list. Kept `winner`/`loser` as the wire
+field names (adding only an optional `outcome`, defaulting to `"a"`) so
+every pre-existing spec file that posts `{winner, loser}` with no outcome
+field needed zero changes --- confirmed this by grepping every spec file
+that logs a manual result before deciding the field-naming question, not
+after.
+
+Gotcha caught before it shipped, not after: reusing `'winner'`/`'loser'`
+for a draw's two sides removes a reader's free exclusion --- the old flat
+`side = 'draw'` shape made `headToHeadTally`'s `side != side` comparison
+automatically skip a draw, since both participants shared the same value.
+The moment a draw's sides became genuinely opposite `side` values, that
+same query would have silently counted a draw as a win for whichever side
+happened to land on `'winner'`. Caught by re-reading `headToHeadTally`
+specifically for this before considering the schema change done, not by a
+failing test --- no test exercised a draw against the stats dashboard yet,
+which is itself the gap: added one (`spec/draws.test.ts`) asserting a draw
+registers as neither a win nor a loss, so this exact regression can't come
+back silently next time the query changes again.
+
+Verified: logged a real 2v2 draw against the running dev server and read
+the rendered HTML directly (not just the spec assertions) to confirm "Priya
+& Jordan drew with Marcus & Noor" renders with both sides intact --- the
+actual complaint, not just a schema-level proxy for it. `pnpm typecheck`
+clean, full suite 120/120 (117 pre-existing, with `spec/draws.test.ts`
+rewritten for the new two-sided shape: 3 tests became 6, including the 2v2
+team-draw case and the stats-exclusion case this round's gotcha surfaced).
